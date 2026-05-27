@@ -3,32 +3,46 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 
+class Renderer(Protocol):
+    def assistant(self, text: str) -> None: ...
+    def think(self, text: str) -> None: ...
+    def tool_call(self, name: str, args: dict) -> None: ...
+    def tool_result(self, tool_call_id: str, content: str, *, tool_name: str | None = None) -> None: ...
+    def status(self, msg: str) -> None: ...
+
+
 @runtime_checkable
 class OutputSink(Protocol):
     def on_assistant(self, text: str) -> None: ...
     def on_think(self, text: str) -> None: ...
     def on_tool_call(self, name: str, args: dict) -> None: ...
-    def on_tool_result(self, tool_call_id: str, content: str) -> None: ...
+    def on_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None: ...
     def on_status(self, msg: str) -> None: ...
 
 
 class TerminalSink:
+    def __init__(self, renderer: Renderer | None = None) -> None:
+        if renderer is None:
+            from reagent.rendering import RichRenderer
+
+            renderer = RichRenderer()
+
+        self._renderer = renderer
+
     def on_assistant(self, text: str) -> None:
-        if text:
-            print(f"\n{text}")
+        self._renderer.assistant(text)
 
     def on_think(self, text: str) -> None:
-        if text:
-            print(f"\n\033[90m{text}\033[0m")
+        self._renderer.think(text)
 
     def on_tool_call(self, name: str, args: dict) -> None:
-        print(f"\n\033[32m•\033[0m {name}({args})")
+        self._renderer.tool_call(name, args)
 
-    def on_tool_result(self, tool_call_id: str, content: str) -> None:
-        print(f"\033[90m{content}\033[0m")
+    def on_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None:
+        self._renderer.tool_result(tool_call_id, content, tool_name=tool_name)
 
     def on_status(self, msg: str) -> None:
-        print(msg)
+        self._renderer.status(msg)
 
 
 class SilentSink:
@@ -41,7 +55,7 @@ class SilentSink:
     def on_tool_call(self, name: str, args: dict) -> None:
         pass
 
-    def on_tool_result(self, tool_call_id: str, content: str) -> None:
+    def on_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None:
         pass
 
     def on_status(self, msg: str) -> None:

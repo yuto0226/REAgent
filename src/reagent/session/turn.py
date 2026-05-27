@@ -103,7 +103,7 @@ async def run_turn(session: Session) -> None:
             try:
                 tool_input = json.loads(tc.function.arguments)
             except json.JSONDecodeError as exc:
-                session.add_tool_result(tc.id, f"Error: invalid tool arguments: {exc}")
+                session.add_tool_result(tc.id, f"Error: invalid tool arguments: {exc}", tool_name=name)
                 continue
 
             session.emit_tool_call(name, tool_input)
@@ -111,6 +111,6 @@ async def run_turn(session: Session) -> None:
             # TODO: wrap handler in run_in_executor; subprocess.run() blocks event loop
             result = handler(tool_input) if handler else f"Error: unknown tool {name!r}"
 
-            session.add_tool_result(tc.id, result)
+            session.add_tool_result(tc.id, result, tool_name=name)
 
     session.add_assistant(f"Stopped: reached iteration limit of {MAX_ITERATIONS}.")
