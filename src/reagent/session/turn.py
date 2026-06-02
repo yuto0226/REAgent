@@ -60,6 +60,7 @@ async def run_turn(session: Session) -> None:
             session.emit_status(f"[compact: {before} → {after} tokens]")
 
         messages = [{"role": "system", "content": sys_prompt}, *session.messages]
+        session.emit_thinking_update("up", session._estimate_tokens())
         try:
             resp = cast(
                 ModelResponse,
@@ -76,7 +77,10 @@ async def run_turn(session: Session) -> None:
             session.add_assistant(f"Stopped: request rejected by API - {exc}")
             return
 
-        session.record_usage(getattr(resp, "usage", None))
+        usage = getattr(resp, "usage", None)
+        down_tokens = getattr(usage, "completion_tokens", 0) or 0
+        session.emit_thinking_update("down", down_tokens)
+        session.record_usage(usage)
         choice0 = resp.choices[0]
         message = choice0.message
         text = extract_text(message)

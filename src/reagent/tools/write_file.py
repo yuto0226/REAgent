@@ -1,9 +1,8 @@
-import difflib
 import os
 from typing import Any
 
 from reagent.results import DiffResult, ErrorResult, ToolResult
-from reagent.tools.base import Tool, params, prop, resolve_path
+from reagent.tools.base import Tool, make_diff, params, prop, resolve_path
 
 
 def write_file(path: str, content: str) -> ToolResult:
@@ -23,14 +22,7 @@ def write_file(path: str, content: str) -> ToolResult:
         with open(path, "w") as f:
             f.write(content)
 
-        diff = "".join(
-            difflib.unified_diff(
-                old_content.splitlines(keepends=True),
-                content.splitlines(keepends=True),
-                fromfile=path,
-                tofile=path,
-            )
-        )
+        diff = make_diff(old_content.splitlines(keepends=True), content.splitlines(keepends=True), path)
         return DiffResult(
             path=path,
             diff=diff,

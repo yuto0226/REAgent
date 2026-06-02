@@ -1,8 +1,7 @@
-import difflib
 from typing import Any
 
 from reagent.results import DiffResult, ErrorResult, ToolResult
-from reagent.tools.base import Tool, params, prop, resolve_path
+from reagent.tools.base import Tool, make_diff, params, prop, resolve_path
 
 
 def edit_file(path: str, start_line: int, end_line: int | None, content: str) -> ToolResult:
@@ -18,21 +17,13 @@ def edit_file(path: str, start_line: int, end_line: int | None, content: str) ->
         e = end_line if end_line is not None else start_line
 
         new_content = content if content.endswith("\n") else content + "\n"
-        new_lines = old_lines[:]
-        new_lines[s:e] = [new_content]
+        new_lines = old_lines[:s] + [new_content] + old_lines[e:]
 
         final = "".join(new_lines)
         with open(path, "w") as f:
             f.write(final)
 
-        diff = "".join(
-            difflib.unified_diff(
-                old_lines,
-                new_lines,
-                fromfile=path,
-                tofile=path,
-            )
-        )
+        diff = make_diff(old_lines, new_lines, path)
         return DiffResult(
             path=path,
             diff=diff,

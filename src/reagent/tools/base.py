@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import difflib
 import os
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -15,6 +16,10 @@ _ALLOWED_ROOTS: tuple[str, ...] = (
     os.path.realpath(os.getcwd()),
     os.path.realpath("/tmp"),
 )
+
+
+def make_diff(old_lines: list[str], new_lines: list[str], path: str) -> str:
+    return "".join(difflib.unified_diff(old_lines, new_lines, fromfile=path, tofile=path))
 
 
 def resolve_path(path: str) -> str:

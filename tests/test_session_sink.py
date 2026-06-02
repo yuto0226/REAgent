@@ -26,6 +26,15 @@ class RecordingSink:
     def on_prompt(self, text: str) -> None:
         self.calls.append(("on_prompt", text))
 
+    def on_thinking_start(self) -> None:
+        self.calls.append(("on_thinking_start",))
+
+    def on_thinking_update(self, phase: str, tokens: int) -> None:
+        self.calls.append(("on_thinking_update", phase, tokens))
+
+    def on_thinking_stop(self) -> None:
+        self.calls.append(("on_thinking_stop",))
+
 
 def test_session_defaults_to_terminal_sink():
     from reagent.protocol import TerminalSink
@@ -111,3 +120,21 @@ def test_emit_status_dispatches_to_sink():
     sink = RecordingSink()
     Session(sink=sink).emit_status("compacting...")
     assert ("on_status", "compacting...") in sink.calls
+
+
+def test_emit_thinking_start_dispatches_to_sink():
+    sink = RecordingSink()
+    Session(sink=sink).emit_thinking_start()
+    assert ("on_thinking_start",) in sink.calls
+
+
+def test_emit_thinking_stop_dispatches_to_sink():
+    sink = RecordingSink()
+    Session(sink=sink).emit_thinking_stop()
+    assert ("on_thinking_stop",) in sink.calls
+
+
+def test_emit_thinking_update_dispatches_to_sink():
+    sink = RecordingSink()
+    Session(sink=sink).emit_thinking_update("up", 1234)
+    assert ("on_thinking_update", "up", 1234) in sink.calls

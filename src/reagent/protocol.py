@@ -13,6 +13,9 @@ class Renderer(Protocol):
     def tool_result(self, tool_call_id: str, result: "ToolResult") -> None: ...
     def status(self, msg: str) -> None: ...
     def prompt(self, text: str) -> None: ...
+    def thinking_start(self) -> None: ...
+    def thinking_update(self, phase: str, tokens: int) -> None: ...
+    def thinking_stop(self) -> None: ...
 
 
 @runtime_checkable
@@ -23,6 +26,9 @@ class OutputSink(Protocol):
     def on_tool_result(self, tool_call_id: str, result: "ToolResult") -> None: ...
     def on_status(self, msg: str) -> None: ...
     def on_prompt(self, text: str) -> None: ...
+    def on_thinking_start(self) -> None: ...
+    def on_thinking_update(self, phase: str, tokens: int) -> None: ...
+    def on_thinking_stop(self) -> None: ...
 
 
 class TerminalSink:
@@ -52,6 +58,15 @@ class TerminalSink:
     def on_prompt(self, text: str) -> None:
         self._renderer.prompt(text)
 
+    def on_thinking_start(self) -> None:
+        self._renderer.thinking_start()
+
+    def on_thinking_update(self, phase: str, tokens: int) -> None:
+        self._renderer.thinking_update(phase, tokens)
+
+    def on_thinking_stop(self) -> None:
+        self._renderer.thinking_stop()
+
 
 class SilentSink:
     def on_assistant(self, text: str) -> None:
@@ -70,4 +85,13 @@ class SilentSink:
         pass
 
     def on_prompt(self, text: str) -> None:
+        pass
+
+    def on_thinking_start(self) -> None:
+        pass
+
+    def on_thinking_update(self, phase: str, tokens: int) -> None:
+        pass
+
+    def on_thinking_stop(self) -> None:
         pass

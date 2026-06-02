@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 
 @dataclass
@@ -46,4 +47,4 @@ class ErrorResult:
         return self.message
 
 
-ToolResult = ShellResult | ReadResult | DiffResult | ErrorResult
+ToolResult: TypeAlias = ShellResult | ReadResult | DiffResult | ErrorResult

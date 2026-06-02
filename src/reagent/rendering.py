@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import textwrap
+import time
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console, RenderableType
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.segment import Segment, Segments
 from rich.style import Style
@@ -14,6 +17,48 @@ from rich.theme import Theme
 from rich.text import Text
 
 from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, ToolResult
+
+
+_SPINNER_FRAMES = "☰☱☲☳☴☵☶☷"
+_SPINNER_MS = 80
+
+
+def _fmt_elapsed(elapsed: float) -> str:
+    if elapsed >= 60:
+        m = int(elapsed // 60)
+        s = elapsed % 60
+        return f"{m}m {s:.1f}s"
+    return f"{elapsed:.1f}s"
+
+
+class _ThinkingStatus:
+    """Live-renderable that updates elapsed time and token counts on every refresh.
+
+    Call set_up() / set_down() to switch direction and update the token count.
+    """
+
+    def __init__(self) -> None:
+        self._started_at = time.monotonic()
+        self._phase: str = "up"
+        self._tokens: int = 0
+
+    def set_up(self, tokens: int) -> None:
+        self._phase = "up"
+        self._tokens = tokens
+
+    def set_down(self, tokens: int) -> None:
+        self._phase = "down"
+        self._tokens = tokens
+
+    def __rich_console__(self, console, options):
+        elapsed = time.monotonic() - self._started_at
+        frame = _SPINNER_FRAMES[int(elapsed * 1000 / _SPINNER_MS) % len(_SPINNER_FRAMES)]
+        arrow = "↑" if self._phase == "up" else "↓"
+        token_part = f"  {arrow}{self._tokens}" if self._tokens else ""
+        stats = f"({elapsed:.1f}s{token_part})"
+        yield Segment.line()
+        yield Text.assemble((f"{frame} thinking  ", "reagent.status"), (stats, "dim"))
+
 
 TERMINAL_THEME = Theme(
     {
@@ -38,6 +83,8 @@ class RichRenderer:
     def __init__(self, console: Console | None = None, max_lines: int = 40) -> None:
         self.console = console if console is not None else Console(theme=TERMINAL_THEME)
         self.max_lines = max_lines
+        self._live: Live | None = None
+        self._thinking_status: _ThinkingStatus | None = None
 
     def assistant(self, text: str) -> None:
         if not text:
@@ -107,8 +154,6 @@ class RichRenderer:
             self.console.print(Text(f"    ... +{omitted} lines omitted", style="dim"))
 
     def _print_diff(self, unified_diff: str, path: str) -> None:
-        import re
-
         diff_lines: list[tuple[str, str, str, str]] = []  # (num, marker, content, style)
         old_ln = new_ln = 0
 
@@ -152,6 +197,33 @@ class RichRenderer:
     def prompt(self, text: str) -> None:
         self.console.print(Text(text, style="reagent.prompt"), end="")
         self.console.file.flush()
+
+    def thinking_start(self) -> None:
+        if self._live is None:
+            self._thinking_status = _ThinkingStatus()
+            self._live = Live(
+                self._thinking_status,
+                console=self.console,
+                refresh_per_second=10,
+                transient=True,
+            )
+            self._live.start()
+
+    def thinking_update(self, phase: str, tokens: int) -> None:
+        if self._thinking_status is not None:
+            if phase == "up":
+                self._thinking_status.set_up(tokens)
+            else:
+                self._thinking_status.set_down(tokens)
+
+    def thinking_stop(self) -> None:
+        if self._live is None or self._thinking_status is None:
+            return
+        elapsed = time.monotonic() - self._thinking_status._started_at
+        self._live.stop()
+        self._live = None
+        self._thinking_status = None
+        self.console.print(Text(f"\n• thinking for {_fmt_elapsed(elapsed)}", style="dim"))
 
     def _print_hanging_renderable(self, renderable: RenderableType, bullet_style: Style) -> None:
         lines = self.console.render_lines(

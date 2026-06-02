@@ -25,6 +25,15 @@ class RecordingRenderer:
     def prompt(self, text: str) -> None:
         self.calls.append(("prompt", text))
 
+    def thinking_start(self) -> None:
+        self.calls.append(("thinking_start",))
+
+    def thinking_update(self, phase: str, tokens: int) -> None:
+        self.calls.append(("thinking_update", phase, tokens))
+
+    def thinking_stop(self) -> None:
+        self.calls.append(("thinking_stop",))
+
 
 def test_terminal_sink_implements_protocol():
     assert isinstance(TerminalSink(), OutputSink)

@@ -58,13 +58,18 @@ async def run(session: Session) -> None:
 
         turn_task = asyncio.create_task(run_turn(session))
         loop.add_signal_handler(signal.SIGINT, turn_task.cancel)
+        session.emit_thinking_start()
 
+        interrupted = False
         try:
             await turn_task
         except asyncio.CancelledError:
-            session.emit_status("■ Conversation interrupted")
+            interrupted = True
         finally:
+            session.emit_thinking_stop()
             loop.remove_signal_handler(signal.SIGINT)
+        if interrupted:
+            session.emit_status("■ Conversation interrupted")
 
         print()
 

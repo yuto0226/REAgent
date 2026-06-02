@@ -90,6 +90,15 @@ class Session:
     def emit_prompt(self, text: str) -> None:
         self._sink.on_prompt(text)
 
+    def emit_thinking_start(self) -> None:
+        self._sink.on_thinking_start()
+
+    def emit_thinking_update(self, phase: str, tokens: int) -> None:
+        self._sink.on_thinking_update(phase, tokens)
+
+    def emit_thinking_stop(self) -> None:
+        self._sink.on_thinking_stop()
+
     def record_usage(self, usage: Any) -> None:
         if usage is None:
             return

@@ -347,3 +347,36 @@ def test_write_file_tool_call_uses_fmt_file_path():
     renderer.tool_call("write_file", {"path": "out.txt"})
 
     assert "• write_file(out.txt)" in console.export_text()
+
+
+def test_thinking_start_and_stop_do_not_raise():
+    renderer, console = make_renderer()
+    renderer.thinking_start()
+    renderer.thinking_stop()
+    assert "thinking for" in console.export_text()
+
+
+def test_thinking_stop_clears_elapsed_on_next_start():
+    renderer, _ = make_renderer()
+    renderer.thinking_start()
+    renderer.thinking_stop()
+    renderer.thinking_start()
+    renderer.thinking_stop()
+
+
+def test_thinking_stop_without_start_is_safe():
+    renderer, _ = make_renderer()
+    renderer.thinking_stop()
+
+
+def test_thinking_start_twice_is_idempotent():
+    renderer, _ = make_renderer()
+    renderer.thinking_start()
+    renderer.thinking_start()
+    renderer.thinking_stop()
+
+
+def test_thinking_update_without_start_is_safe():
+    renderer, _ = make_renderer()
+    renderer.thinking_update("up", 1000)
+    renderer.thinking_update("down", 50)
