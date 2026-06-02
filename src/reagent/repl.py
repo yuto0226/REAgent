@@ -9,7 +9,7 @@ from reagent.session import Session
 from reagent.session.turn import run_turn
 
 
-async def _get_input(prompt: str) -> str:
+async def _get_input() -> str:
     """Read one stdin line via add_reader — no blocking thread."""
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[str] = loop.create_future()
@@ -30,8 +30,6 @@ async def _get_input(prompt: str) -> str:
         if not fut.done():
             fut.set_result(data.decode(errors="replace").rstrip("\n\r"))
 
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
     loop.add_reader(fd, _on_readable)
     try:
         return await fut
@@ -44,7 +42,8 @@ async def run(session: Session) -> None:
     loop = asyncio.get_running_loop()
     while True:
         try:
-            prompt = await _get_input("\033[36m> \033[0m")
+            session.emit_prompt("> ")
+            prompt = await _get_input()
         except EOFError:
             break
 
@@ -63,7 +62,7 @@ async def run(session: Session) -> None:
         try:
             await turn_task
         except asyncio.CancelledError:
-            session.emit_status("\033[33m■ Conversation interrupted\033[0m")
+            session.emit_status("■ Conversation interrupted")
         finally:
             loop.remove_signal_handler(signal.SIGINT)
 

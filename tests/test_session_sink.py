@@ -22,6 +22,9 @@ class RecordingSink:
     def on_status(self, msg: str) -> None:
         self.calls.append(("on_status", msg))
 
+    def on_prompt(self, text: str) -> None:
+        self.calls.append(("on_prompt", text))
+
 
 def test_session_defaults_to_terminal_sink():
     from reagent.protocol import TerminalSink

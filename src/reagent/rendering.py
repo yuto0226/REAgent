@@ -22,6 +22,7 @@ TERMINAL_THEME = Theme(
         "reagent.success": "green",
         "reagent.error": "red",
         "reagent.status": "yellow",
+        "reagent.prompt": "cyan",
     }
 )
 
@@ -81,6 +82,10 @@ class RichRenderer:
 
     def status(self, msg: str) -> None:
         self.console.print(Text(msg, style="reagent.status"))
+
+    def prompt(self, text: str) -> None:
+        self.console.print(Text(text, style="reagent.prompt"), end="")
+        self.console.file.flush()
 
     def _print_hanging_renderable(self, renderable: RenderableType, bullet_style: Style) -> None:
         lines = self.console.render_lines(

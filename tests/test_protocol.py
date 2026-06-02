@@ -21,6 +21,9 @@ class RecordingRenderer:
     def status(self, msg: str) -> None:
         self.calls.append(("status", msg))
 
+    def prompt(self, text: str) -> None:
+        self.calls.append(("prompt", text))
+
 
 def test_terminal_sink_implements_protocol():
     assert isinstance(TerminalSink(), OutputSink)

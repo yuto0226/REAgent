@@ -86,6 +86,9 @@ class Session:
     def emit_status(self, msg: str) -> None:
         self._sink.on_status(msg)
 
+    def emit_prompt(self, text: str) -> None:
+        self._sink.on_prompt(text)
+
     def record_usage(self, usage: Any) -> None:
         if usage is None:
             return

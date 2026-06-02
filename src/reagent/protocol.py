@@ -9,6 +9,7 @@ class Renderer(Protocol):
     def tool_call(self, name: str, args: dict) -> None: ...
     def tool_result(self, tool_call_id: str, content: str, *, tool_name: str | None = None) -> None: ...
     def status(self, msg: str) -> None: ...
+    def prompt(self, text: str) -> None: ...
 
 
 @runtime_checkable
@@ -18,6 +19,7 @@ class OutputSink(Protocol):
     def on_tool_call(self, name: str, args: dict) -> None: ...
     def on_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None: ...
     def on_status(self, msg: str) -> None: ...
+    def on_prompt(self, text: str) -> None: ...
 
 
 class TerminalSink:
@@ -44,6 +46,9 @@ class TerminalSink:
     def on_status(self, msg: str) -> None:
         self._renderer.status(msg)
 
+    def on_prompt(self, text: str) -> None:
+        self._renderer.prompt(text)
+
 
 class SilentSink:
     def on_assistant(self, text: str) -> None:
@@ -59,4 +64,7 @@ class SilentSink:
         pass
 
     def on_status(self, msg: str) -> None:
+        pass
+
+    def on_prompt(self, text: str) -> None:
         pass
