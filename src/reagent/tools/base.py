@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 import os
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from reagent.results import ToolResult
 
 
 MAX_OUTPUT = 50_000
@@ -41,7 +46,7 @@ class Tool(ABC):
     def parameters(self) -> dict[str, Any]: ...
 
     @abstractmethod
-    def run(self, params: dict[str, Any]) -> str: ...
+    def run(self, params: dict[str, Any]) -> "ToolResult": ...
 
     def to_schema(self) -> dict[str, Any]:
         return {

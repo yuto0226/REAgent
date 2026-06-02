@@ -1,5 +1,6 @@
 # tests/test_protocol.py
 from reagent.protocol import OutputSink, SilentSink, TerminalSink
+from reagent.results import ShellResult
 
 
 class RecordingRenderer:
@@ -15,8 +16,8 @@ class RecordingRenderer:
     def tool_call(self, name: str, args: dict) -> None:
         self.calls.append(("tool_call", name, args))
 
-    def tool_result(self, tool_call_id: str, content: str, *, tool_name: str | None = None) -> None:
-        self.calls.append(("tool_result", tool_call_id, content, tool_name))
+    def tool_result(self, tool_call_id: str, result) -> None:
+        self.calls.append(("tool_result", tool_call_id, result))
 
     def status(self, msg: str) -> None:
         self.calls.append(("status", msg))
@@ -38,7 +39,7 @@ def test_silent_sink_produces_no_output(capsys):
     sink.on_assistant("hello")
     sink.on_think("thinking")
     sink.on_tool_call("bash", {"cmd": "ls"})
-    sink.on_tool_result("id1", "result")
+    sink.on_tool_result("id1", ShellResult("result"))
     sink.on_status("status msg")
     assert capsys.readouterr().out == ""
 
@@ -64,7 +65,7 @@ def test_terminal_sink_on_tool_call(capsys):
 
 
 def test_terminal_sink_on_tool_result(capsys):
-    TerminalSink().on_tool_result("id1", "some output")
+    TerminalSink().on_tool_result("id1", ShellResult("some output"))
     assert "some output" in capsys.readouterr().out
 
 
@@ -77,16 +78,17 @@ def test_terminal_sink_delegates_to_renderer():
     renderer = RecordingRenderer()
     sink = TerminalSink(renderer=renderer)
 
+    result = ShellResult("output")
     sink.on_assistant("hello")
     sink.on_think("thinking")
     sink.on_tool_call("shell", {"command": "pwd"})
-    sink.on_tool_result("call-1", "output")
+    sink.on_tool_result("call-1", result)
     sink.on_status("status")
 
     assert renderer.calls == [
         ("assistant", "hello"),
         ("think", "thinking"),
         ("tool_call", "shell", {"command": "pwd"}),
-        ("tool_result", "call-1", "output", None),
+        ("tool_result", "call-1", result),
         ("status", "status"),
     ]

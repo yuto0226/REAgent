@@ -1,5 +1,6 @@
 # tests/test_session_sink.py
 from reagent.protocol import SilentSink
+from reagent.results import ErrorResult, ShellResult
 from reagent.session import Session
 
 
@@ -16,8 +17,8 @@ class RecordingSink:
     def on_tool_call(self, name: str, args: dict) -> None:
         self.calls.append(("on_tool_call", name, args))
 
-    def on_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None:
-        self.calls.append(("on_tool_result", tool_call_id, content, tool_name))
+    def on_tool_result(self, tool_call_id: str, result) -> None:
+        self.calls.append(("on_tool_result", tool_call_id, result))
 
     def on_status(self, msg: str) -> None:
         self.calls.append(("on_status", msg))
@@ -53,7 +54,7 @@ def test_add_think_calls_sink(capsys):
 
 def test_add_tool_result_calls_sink(capsys):
     s = Session(sink=SilentSink())
-    s.add_tool_result("id1", "output")
+    s.add_tool_result("id1", ShellResult("output"))
     assert capsys.readouterr().out == ""
 
 
@@ -83,14 +84,21 @@ def test_add_think_dispatches_to_sink():
 
 def test_add_tool_result_dispatches_to_sink():
     sink = RecordingSink()
-    Session(sink=sink).add_tool_result("call1", "output")
-    assert ("on_tool_result", "call1", "output", None) in sink.calls
+    result = ShellResult("output")
+    Session(sink=sink).add_tool_result("call1", result)
+    assert ("on_tool_result", "call1", result) in sink.calls
 
 
-def test_add_tool_result_dispatches_tool_name_to_sink():
-    sink = RecordingSink()
-    Session(sink=sink).add_tool_result("call1", "output", tool_name="shell")
-    assert ("on_tool_result", "call1", "output", "shell") in sink.calls
+def test_add_tool_result_stores_text_in_history():
+    s = Session(sink=SilentSink())
+    s.add_tool_result("call1", ShellResult("hello"))
+    assert s.messages[-1]["content"] == "hello"
+
+
+def test_add_tool_result_error_stores_message_in_history():
+    s = Session(sink=SilentSink())
+    s.add_tool_result("call1", ErrorResult("Error: oops"))
+    assert s.messages[-1]["content"] == "Error: oops"
 
 
 def test_emit_tool_call_dispatches_to_sink():

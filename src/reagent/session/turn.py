@@ -12,6 +12,7 @@ from litellm.exceptions import BadRequestError  # noqa: E402
 from litellm.types.utils import ModelResponse  # noqa: E402
 
 from reagent.compact import make_compact_fn  # noqa: E402
+from reagent.results import ErrorResult  # noqa: E402
 from reagent.session.prompt import system_prompt  # noqa: E402
 from reagent.session.session import Session  # noqa: E402
 from reagent.tools import TOOLS, TOOL_HANDLERS  # noqa: E402
@@ -103,14 +104,14 @@ async def run_turn(session: Session) -> None:
             try:
                 tool_input = json.loads(tc.function.arguments)
             except json.JSONDecodeError as exc:
-                session.add_tool_result(tc.id, f"Error: invalid tool arguments: {exc}", tool_name=name)
+                session.add_tool_result(tc.id, ErrorResult(f"Error: invalid tool arguments: {exc}"))
                 continue
 
             session.emit_tool_call(name, tool_input)
             handler = TOOL_HANDLERS.get(name)
             # TODO: wrap handler in run_in_executor; subprocess.run() blocks event loop
-            result = handler(tool_input) if handler else f"Error: unknown tool {name!r}"
+            result = handler(tool_input) if handler else ErrorResult(f"Error: unknown tool {name!r}")
 
-            session.add_tool_result(tc.id, result, tool_name=name)
+            session.add_tool_result(tc.id, result)
 
     session.add_assistant(f"Stopped: reached iteration limit of {MAX_ITERATIONS}.")

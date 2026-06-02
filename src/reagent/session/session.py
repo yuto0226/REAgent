@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any, Literal, TypedDict
 
 from reagent.protocol import OutputSink, TerminalSink
+from reagent.results import ToolResult
 
 TOKEN_LIMIT = 60_000
 
@@ -76,9 +77,9 @@ class Session:
         )
         self.tool_calls += len(raw_message.tool_calls or [])
 
-    def add_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None:
-        self._history.append(ToolMessage(role="tool", tool_call_id=tool_call_id, content=content))
-        self._sink.on_tool_result(tool_call_id, content, tool_name=tool_name)
+    def add_tool_result(self, tool_call_id: str, result: ToolResult) -> None:
+        self._history.append(ToolMessage(role="tool", tool_call_id=tool_call_id, content=result.text))
+        self._sink.on_tool_result(tool_call_id, result)
 
     def emit_tool_call(self, name: str, args: dict) -> None:
         self._sink.on_tool_call(name, args)

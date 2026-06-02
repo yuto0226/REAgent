@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console, RenderableType
@@ -11,6 +12,8 @@ from rich.style import Style
 from rich.syntax import Syntax
 from rich.theme import Theme
 from rich.text import Text
+
+from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, ToolResult
 
 TERMINAL_THEME = Theme(
     {
@@ -65,20 +68,83 @@ class RichRenderer:
         lines = self._wrap_call(name, formatted_args)
         self._print_tool_call_lines(lines)
 
-    def tool_result(self, tool_call_id: str, content: str, *, tool_name: str | None = None) -> None:
+    def tool_result(self, tool_call_id: str, result: ToolResult) -> None:
         del tool_call_id
+        match result:
+            case ErrorResult(message=msg):
+                self._print_tree(self._clip_lines(msg), style="reagent.error")
+            case ShellResult(output=output):
+                self._print_tree(self._clip_lines(output), style="reagent.guide")
+            case ReadResult(content=content, path=path, start_line=start_line):
+                if content:
+                    self._print_read(content, path, start_line)
+                else:
+                    self._print_tree(["(empty file)"], style="reagent.guide")
+            case DiffResult(diff=diff, path=path, message=msg):
+                if diff:
+                    self._print_diff(diff, path)
+                else:
+                    self._print_tree([msg], style="reagent.success")
 
-        lines = self._clip_lines(content)
+    def _print_read(self, content: str, path: str, start_line: int) -> None:
+        lines = content.splitlines()
+        omitted = 0
+        if len(lines) > self.max_lines:
+            omitted = len(lines) - self.max_lines
+            lines = lines[: self.max_lines]
+        ext = Path(path).suffix.lstrip(".")
+        self.console.print(
+            Syntax(
+                "\n".join(lines),
+                ext or "text",
+                line_numbers=True,
+                start_line=start_line,
+                theme="ansi_dark",
+                background_color="default",
+            )
+        )
+        if omitted:
+            self.console.print(Text(f"    ... +{omitted} lines omitted", style="dim"))
 
-        if content.startswith("Error:"):
-            self._print_tree(lines, style="reagent.error")
-            return
+    def _print_diff(self, unified_diff: str, path: str) -> None:
+        import re
 
-        if tool_name in {"write_file", "edit_file"}:
-            self._print_tree(lines, style="reagent.success")
-            return
+        diff_lines: list[tuple[str, str, str, str]] = []  # (num, marker, content, style)
+        old_ln = new_ln = 0
 
-        self._print_tree(lines, style="reagent.guide")
+        for raw in unified_diff.splitlines():
+            if raw.startswith(("---", "+++")):
+                continue
+            if raw.startswith("@@"):
+                m = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
+                if m:
+                    old_ln = int(m.group(1))
+                    new_ln = int(m.group(2))
+                continue
+            if raw.startswith("+"):
+                num, marker, style = f"{new_ln:>4}", "+", "reagent.success"
+                new_ln += 1
+            elif raw.startswith("-"):
+                num, marker, style = "    ", "-", "reagent.error"
+                old_ln += 1
+            else:
+                num, marker, style = f"{new_ln:>4}", " ", "dim"
+                old_ln += 1
+                new_ln += 1
+            diff_lines.append((num, marker, raw[1:], style))
+
+        total = len(diff_lines)
+        if total > self.max_lines:
+            diff_lines = diff_lines[: self.max_lines]
+
+        for i, (num, marker, content, style) in enumerate(diff_lines):
+            prefix = "  ⎿ " if i == 0 else "    "
+            self.console.print(
+                Text.assemble((prefix, GUIDE_STYLE), (num, GUIDE_STYLE), (f" {marker} ", style), (content, style))
+            )
+
+        if total > self.max_lines:
+            self.console.print(Text(f"    ... +{total - self.max_lines} lines omitted", style="dim"))
 
     def status(self, msg: str) -> None:
         self.console.print(Text(msg, style="reagent.status"))

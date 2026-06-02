@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from reagent.results import ToolResult
 
 
 class Renderer(Protocol):
     def assistant(self, text: str) -> None: ...
     def think(self, text: str) -> None: ...
     def tool_call(self, name: str, args: dict) -> None: ...
-    def tool_result(self, tool_call_id: str, content: str, *, tool_name: str | None = None) -> None: ...
+    def tool_result(self, tool_call_id: str, result: "ToolResult") -> None: ...
     def status(self, msg: str) -> None: ...
     def prompt(self, text: str) -> None: ...
 
@@ -17,7 +20,7 @@ class OutputSink(Protocol):
     def on_assistant(self, text: str) -> None: ...
     def on_think(self, text: str) -> None: ...
     def on_tool_call(self, name: str, args: dict) -> None: ...
-    def on_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None: ...
+    def on_tool_result(self, tool_call_id: str, result: "ToolResult") -> None: ...
     def on_status(self, msg: str) -> None: ...
     def on_prompt(self, text: str) -> None: ...
 
@@ -40,8 +43,8 @@ class TerminalSink:
     def on_tool_call(self, name: str, args: dict) -> None:
         self._renderer.tool_call(name, args)
 
-    def on_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None:
-        self._renderer.tool_result(tool_call_id, content, tool_name=tool_name)
+    def on_tool_result(self, tool_call_id: str, result: "ToolResult") -> None:
+        self._renderer.tool_result(tool_call_id, result)
 
     def on_status(self, msg: str) -> None:
         self._renderer.status(msg)
@@ -60,7 +63,7 @@ class SilentSink:
     def on_tool_call(self, name: str, args: dict) -> None:
         pass
 
-    def on_tool_result(self, tool_call_id: str, content: str, tool_name: str | None = None) -> None:
+    def on_tool_result(self, tool_call_id: str, result: "ToolResult") -> None:
         pass
 
     def on_status(self, msg: str) -> None:

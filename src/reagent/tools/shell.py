@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 from typing import Any
 
+from reagent.results import ErrorResult, ShellResult, ToolResult
 from reagent.tools.base import MAX_OUTPUT, Tool, params, prop
 
 
@@ -33,9 +34,9 @@ def _truncate(output: str) -> str:
     return f"{head}\n... {omitted} chars omitted — full output saved to {spill_path} ...\n{tail}"
 
 
-def run_shell(command: str, timeout: int) -> str:
+def run_shell(command: str, timeout: int) -> ToolResult:
     if any(re.search(p, command) for p in _DANGEROUS_PATTERNS):
-        return "Error: Dangerous command blocked"
+        return ErrorResult("Error: Dangerous command blocked")
 
     try:
         result = subprocess.run(
@@ -47,13 +48,13 @@ def run_shell(command: str, timeout: int) -> str:
         )
 
     except subprocess.TimeoutExpired:
-        return f"Error: Timeout ({timeout}s)"
+        return ErrorResult(f"Error: Timeout ({timeout}s)")
 
     except (FileNotFoundError, OSError) as e:
-        return f"Error: {e}"
+        return ErrorResult(f"Error: {e}")
 
     output = (result.stdout + result.stderr).strip()
-    return _truncate(output) if output else "(no output)"
+    return ShellResult(_truncate(output) if output else "(no output)")
 
 
 class ShellTool(Tool):
@@ -64,5 +65,5 @@ class ShellTool(Tool):
     def parameters(self) -> dict[str, Any]:
         return params({"command": prop("string")}, required=["command"])
 
-    def run(self, params: dict[str, Any]) -> str:
+    def run(self, params: dict[str, Any]) -> ToolResult:
         return run_shell(params["command"], SHELL_TIMEOUT)

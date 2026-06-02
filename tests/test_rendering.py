@@ -2,6 +2,7 @@ from rich.console import Console
 from rich.color import ColorType
 
 from reagent.rendering import RichRenderer
+from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult
 
 
 def make_renderer(max_lines: int = 80, width: int = 100) -> tuple[RichRenderer, Console]:
@@ -189,7 +190,7 @@ def test_edit_file_tool_call_renders_path_and_range():
 def test_tool_result_renders_generic_output():
     renderer, console = make_renderer()
 
-    renderer.tool_result("call-1", "line one\nline two")
+    renderer.tool_result("call-1", ShellResult("line one\nline two"))
 
     output = console.export_text()
     assert "  ⎿ line one" in output
@@ -199,7 +200,7 @@ def test_tool_result_renders_generic_output():
 def test_tool_result_wraps_long_lines_with_content_indent():
     renderer, console = make_renderer(width=34)
 
-    renderer.tool_result("call-1", "abcdefghijklmnopqrstuvwxyz0123456789")
+    renderer.tool_result("call-1", ShellResult("abcdefghijklmnopqrstuvwxyz0123456789"))
 
     output = console.export_text()
     lines = output.splitlines()
@@ -211,7 +212,7 @@ def test_tool_result_wraps_long_lines_with_content_indent():
 def test_tool_result_tree_prefix_is_dim():
     renderer, console = make_renderer()
 
-    renderer.tool_result("call-1", "line one\nline two")
+    renderer.tool_result("call-1", ShellResult("line one\nline two"))
 
     segments = console._record_buffer
     assert any(segment.text == "  ⎿ " and segment.style and segment.style.dim for segment in segments)
@@ -220,7 +221,7 @@ def test_tool_result_tree_prefix_is_dim():
 def test_tool_result_renders_error_output():
     renderer, console = make_renderer()
 
-    renderer.tool_result("call-1", "Error: failed")
+    renderer.tool_result("call-1", ErrorResult("Error: failed"))
 
     assert "Error: failed" in console.export_text()
 
@@ -228,7 +229,7 @@ def test_tool_result_renders_error_output():
 def test_tool_result_truncates_middle_lines():
     renderer, console = make_renderer(max_lines=5)
 
-    renderer.tool_result("call-1", "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7")
+    renderer.tool_result("call-1", ShellResult("line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7"))
 
     output = console.export_text()
     assert "  ⎿ line 1" in output
@@ -247,28 +248,83 @@ def test_status_renders_message():
     assert "compacting..." in console.export_text()
 
 
-def test_read_file_result_renders_numbered_content():
+def test_read_file_result_renders_content_with_syntax():
     renderer, console = make_renderer()
 
-    renderer.tool_result("call-1", "1: from __future__ import annotations\n2: print('hi')", tool_name="read_file")
+    renderer.tool_result(
+        "call-1", ReadResult(path="src/foo.py", content="from __future__ import annotations\nprint('hi')")
+    )
 
     output = console.export_text()
     assert "from __future__ import annotations" in output
     assert "print" in output
 
 
-def test_write_file_result_renders_success_message():
+def test_read_file_result_shows_line_numbers():
     renderer, console = make_renderer()
 
-    renderer.tool_result("call-1", "Written 12 bytes to /tmp/example.txt", tool_name="write_file")
+    renderer.tool_result("call-1", ReadResult(path="src/foo.py", content="alpha\nbeta", start_line=5))
+
+    output = console.export_text()
+    assert "5" in output
+    assert "alpha" in output
+
+
+def test_read_file_result_empty_shows_fallback():
+    renderer, console = make_renderer()
+
+    renderer.tool_result("call-1", ReadResult(path="src/foo.py", content=""))
+
+    assert "(empty file)" in console.export_text()
+
+
+def test_read_file_result_truncates_to_max_lines():
+    renderer, console = make_renderer(max_lines=3)
+
+    renderer.tool_result("call-1", ReadResult(path="src/foo.py", content="alpha\nbeta\ngamma\ndelta\nepsilon"))
+
+    output = console.export_text()
+    assert "alpha" in output
+    assert "+2 lines omitted" in output
+    assert "delta" not in output
+    assert "epsilon" not in output
+
+
+def test_write_file_result_no_diff_shows_message():
+    renderer, console = make_renderer()
+
+    renderer.tool_result(
+        "call-1", DiffResult(path="/tmp/example.txt", diff="", message="Written 12 bytes to /tmp/example.txt")
+    )
 
     assert "Written 12 bytes" in console.export_text()
 
 
-def test_tool_result_empty_content_produces_no_output():
+def test_write_file_result_with_diff_shows_gutter_format():
     renderer, console = make_renderer()
 
-    renderer.tool_result("call-1", "")
+    renderer.tool_result(
+        "call-1",
+        DiffResult(
+            path="/tmp/foo.py",
+            diff="--- /tmp/foo.py\n+++ /tmp/foo.py\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+            message="Written 11 bytes to /tmp/foo.py",
+        ),
+    )
+
+    output = console.export_text()
+    # gutter shows line numbers and + marker, no ---/+++ headers
+    assert "hello" in output
+    assert "world" in output
+    assert "---" not in output
+    assert "+++" not in output
+    assert "+" in output  # marker present
+
+
+def test_tool_result_empty_output_produces_no_output():
+    renderer, console = make_renderer()
+
+    renderer.tool_result("call-1", ShellResult(""))
 
     assert console.export_text().strip() == ""
 
@@ -276,7 +332,7 @@ def test_tool_result_empty_content_produces_no_output():
 def test_tool_result_truncates_to_max_lines_exactly():
     renderer, console = make_renderer(max_lines=3)
 
-    renderer.tool_result("call-1", "a\nb\nc\nd\ne")
+    renderer.tool_result("call-1", ShellResult("a\nb\nc\nd\ne"))
 
     output = console.export_text()
     assert "  ⎿ a" in output
