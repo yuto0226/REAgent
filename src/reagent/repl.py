@@ -51,6 +51,7 @@ _SPINNER_MS = 120
 _SPIN_INTERVAL = _SPINNER_MS / 1000
 _DOUBLE_CTRL_C_WINDOW = 1.5  # seconds between two idle Ctrl+C presses to exit
 _TOOL_CALL_FLASH_INTERVAL = 0.4
+_INPUT_PREFIX = "> "
 
 _STYLE = PTStyle.from_dict(
     {
@@ -77,6 +78,18 @@ class _ToolCallDisplay:
     args: dict
     started_at: float
     state: Literal["pending", "success", "error"] = "pending"
+
+
+@dataclass
+class _ReplState:
+    thinking_at: float | None = None
+    thinking_phase: str = ""
+    thinking_tokens: int = 0
+    status_text: str = ""
+    status_style: str = "status"
+    hint_text: str = ""
+    active_turn: asyncio.Task | None = None
+    last_ctrl_c: float = 0.0
 
 
 class _OutputBuffer(io.TextIOBase):
@@ -157,7 +170,7 @@ class _ContinuationIndent(Processor):
     Must shift cursor mappings by 2 to account for the added indent characters.
     """
 
-    _N = 2
+    _N = len(_INPUT_PREFIX)
 
     def apply_transformation(self, transformation_input) -> Transformation:
         if transformation_input.lineno == 0:
@@ -176,10 +189,6 @@ def _sep_text() -> FormattedText:
 
 def _status_needs_spacer(*, is_thinking: bool, status_text: str) -> bool:
     return is_thinking or bool(status_text)
-
-
-def _status_needs_input_spacer(*, is_thinking: bool, status_text: str) -> bool:
-    return _status_needs_spacer(is_thinking=is_thinking, status_text=status_text)
 
 
 def _format_status(status_text: str, *, style_class: str) -> FormattedText:
@@ -205,23 +214,12 @@ async def run(session: Session) -> None:
         use_live=False,
     )
 
-    # Layout state — mutable list containers so the nested _Sink class methods
-    # (which can't use 'nonlocal') share state with key bindings and layout controls.
-    _thinking_at: list[float | None] = [None]
-    _thinking_phase: list[str] = [""]
-    _thinking_tokens: list[int] = [0]
-    _status_text: list[str] = [""]
-    _status_style: list[str] = ["status"]
-    _hint_text: list[str] = [""]
-    _active_turn: list[asyncio.Task | None] = [None]
-    _last_ctrl_c: list[float] = [0.0]
+    state = _ReplState()
     _tool_call_displays: dict[str, _ToolCallDisplay] = {}
 
-    # Custom sink: inherits pass-through forwarders from TerminalSink but overrides
-    # status/thinking methods to update layout state instead of writing to the buffer.
     def _set_status(msg: str, *, style_class: str = "status") -> None:
-        _status_text[0] = msg
-        _status_style[0] = style_class
+        state.status_text = msg
+        state.status_style = style_class
         if output._app:
             output._app.invalidate()
 
@@ -259,14 +257,14 @@ async def run(session: Session) -> None:
             _set_status(msg)
 
         def on_thinking_start(self) -> None:
-            pass  # spinner driven by _thinking_at set in _process_turns
+            pass  # spinner driven by state.thinking_at set in _process_turns
 
         def on_thinking_stop(self) -> None:
-            pass  # "thinking for Xs" written by _process_turns after clearing _thinking_at
+            pass  # "thinking for Xs" written by _process_turns after clearing state.thinking_at
 
         def on_thinking_update(self, phase: str, tokens: int) -> None:
-            _thinking_phase[0] = phase
-            _thinking_tokens[0] = tokens
+            state.thinking_phase = phase
+            state.thinking_tokens = tokens
             if output._app:
                 output._app.invalidate()
 
@@ -277,41 +275,31 @@ async def run(session: Session) -> None:
     loop = asyncio.get_running_loop()
 
     def _is_thinking() -> bool:
-        return _thinking_at[0] is not None
+        return state.thinking_at is not None
 
     def _get_status() -> FormattedText:
-        t = _thinking_at[0]
+        t = state.thinking_at
         if t is not None:
             elapsed = time.monotonic() - t
             frame = SPINNER_FRAMES[int(elapsed * 1000 / _SPINNER_MS) % len(SPINNER_FRAMES)]
-            phase = _thinking_phase[0]
-            tokens = _thinking_tokens[0]
-            arrow = "↑" if phase == "up" else "↓"
-            token_part = f"  {arrow}{tokens}" if tokens else ""
+            arrow = "↑" if state.thinking_phase == "up" else "↓"
+            token_part = f"  {arrow}{state.thinking_tokens}" if state.thinking_tokens else ""
             return _format_thinking(frame, elapsed=elapsed, token_part=token_part)
-        s = _status_text[0]
-        if s:
-            return _format_status(s, style_class=_status_style[0])
+        if state.status_text:
+            return _format_status(state.status_text, style_class=state.status_style)
         return FormattedText([])
 
     def _has_status() -> bool:
-        return _is_thinking() or bool(_status_text[0])
+        return _is_thinking() or bool(state.status_text)
 
     def _has_status_spacer() -> bool:
         return _status_needs_spacer(
             is_thinking=_is_thinking(),
-            status_text=_status_text[0],
-        )
-
-    def _has_status_input_spacer() -> bool:
-        return _status_needs_input_spacer(
-            is_thinking=_is_thinking(),
-            status_text=_status_text[0],
+            status_text=state.status_text,
         )
 
     def _get_hint() -> FormattedText:
-        s = _hint_text[0]
-        return FormattedText([("class:hint", f" {s}")]) if s else FormattedText([])
+        return FormattedText([("class:hint", f" {state.hint_text}")]) if state.hint_text else FormattedText([])
 
     kb = KeyBindings()
 
@@ -329,7 +317,7 @@ async def run(session: Session) -> None:
         if stripped.lower() in ("/quit", "/exit"):
             input_queue.put_nowait(None)
         else:
-            _hint_text[0] = ""
+            state.hint_text = ""
             input_queue.put_nowait(text)
 
     @kb.add("f20")
@@ -339,26 +327,26 @@ async def run(session: Session) -> None:
 
     @kb.add("c-c", eager=True)
     def _ctrl_c(event) -> None:
-        t = _active_turn[0]
+        t = state.active_turn
         if t is not None:
             t.cancel()
-            _hint_text[0] = ""
-            _last_ctrl_c[0] = 0.0
+            state.hint_text = ""
+            state.last_ctrl_c = 0.0
         else:
             now = time.monotonic()
-            if now - _last_ctrl_c[0] <= _DOUBLE_CTRL_C_WINDOW:
+            if now - state.last_ctrl_c <= _DOUBLE_CTRL_C_WINDOW:
                 input_queue.put_nowait(None)
             else:
-                _last_ctrl_c[0] = now
+                state.last_ctrl_c = now
                 event.current_buffer.reset()
-                _hint_text[0] = "Press Ctrl+C again to exit"
+                state.hint_text = "Press Ctrl+C again to exit"
                 if output._app:
                     output._app.invalidate()
 
     # ESC cancels the running turn; filtered out when idle so emacs bindings work normally.
     @kb.add("escape", filter=Condition(_is_thinking), eager=True)
     def _interrupt(event) -> None:
-        t = _active_turn[0]
+        t = state.active_turn
         if t is not None:
             t.cancel()
 
@@ -372,8 +360,8 @@ async def run(session: Session) -> None:
             4
             + (1 if _has_status() else 0)
             + (1 if _has_status_spacer() else 0)
-            + (1 if _has_status_input_spacer() else 0)
-            + (1 if _hint_text[0] else 0)
+            + (1 if _has_status_spacer() else 0)
+            + (1 if state.hint_text else 0)
         )
         available = max(1, shutil.get_terminal_size().lines - reserved)
         return ANSI(output.get_tail(available))
@@ -392,13 +380,16 @@ async def run(session: Session) -> None:
                 ),
                 ConditionalContainer(
                     Window(height=1),
-                    filter=Condition(_has_status_input_spacer),
+                    filter=Condition(_has_status_spacer),
                 ),
                 Window(FormattedTextControl(_sep_text), height=1),
                 Window(
                     BufferControl(
                         buffer=buf,
-                        input_processors=[BeforeInput("> ", style="class:prompt-prefix"), _ContinuationIndent()],
+                        input_processors=[
+                            BeforeInput(_INPUT_PREFIX, style="class:prompt-prefix"),
+                            _ContinuationIndent(),
+                        ],
                         include_default_input_processors=True,
                     ),
                     wrap_lines=True,
@@ -408,7 +399,7 @@ async def run(session: Session) -> None:
                 Window(FormattedTextControl(_sep_text), height=1),
                 ConditionalContainer(
                     Window(FormattedTextControl(_get_hint), height=1),
-                    filter=Condition(lambda: bool(_hint_text[0])),
+                    filter=Condition(lambda: bool(state.hint_text)),
                 ),
                 Window(),  # spacer: absorbs remaining space below the input
             ]
@@ -420,6 +411,7 @@ async def run(session: Session) -> None:
         key_bindings=merge_key_bindings([load_emacs_bindings(), kb]),
         style=_STYLE,
         full_screen=True,
+        refresh_interval=_SPIN_INTERVAL,
     )
     output._app = app
 
@@ -434,32 +426,25 @@ async def run(session: Session) -> None:
             session.add_user(user_input)
 
             turn_task = asyncio.create_task(run_turn(session))
-            _active_turn[0] = turn_task
+            state.active_turn = turn_task
             loop.add_signal_handler(signal.SIGINT, turn_task.cancel)
-            _thinking_at[0] = time.monotonic()
-            _thinking_phase[0] = ""
-            _thinking_tokens[0] = 0
+            state.thinking_at = time.monotonic()
+            state.thinking_phase = ""
+            state.thinking_tokens = 0
             session.emit_thinking_start()
 
-            async def _spin() -> None:
-                while True:
-                    await asyncio.sleep(_SPIN_INTERVAL)
-                    app.invalidate()
-
-            spin_task = asyncio.create_task(_spin())
             interrupted = False
             try:
                 await turn_task
             except asyncio.CancelledError:
                 interrupted = True
             finally:
-                spin_task.cancel()
-                elapsed = time.monotonic() - _thinking_at[0]  # always set before try
-                _thinking_at[0] = None
-                _thinking_phase[0] = ""
-                _thinking_tokens[0] = 0
+                elapsed = time.monotonic() - (state.thinking_at or 0.0)
+                state.thinking_at = None
+                state.thinking_phase = ""
+                state.thinking_tokens = 0
                 _set_status(f"• thinking for {_fmt_elapsed(elapsed)}", style_class="thinking-for")
-                _active_turn[0] = None
+                state.active_turn = None
                 session.emit_thinking_stop()
                 loop.remove_signal_handler(signal.SIGINT)
                 app.invalidate()

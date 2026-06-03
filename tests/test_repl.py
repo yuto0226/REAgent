@@ -2,7 +2,6 @@ from reagent.repl import (
     _OutputBuffer,
     _format_status,
     _format_thinking,
-    _status_needs_input_spacer,
     _status_needs_spacer,
     _tool_call_bullet_style,
 )
@@ -13,7 +12,7 @@ def test_regular_status_is_separated_from_message_by_blank_line():
 
 
 def test_regular_status_is_separated_from_input_by_blank_line():
-    assert _status_needs_input_spacer(is_thinking=False, status_text="compacting...")
+    assert _status_needs_spacer(is_thinking=False, status_text="compacting...")
 
 
 def test_thinking_status_is_separated_from_message_by_blank_line():
@@ -21,7 +20,7 @@ def test_thinking_status_is_separated_from_message_by_blank_line():
 
 
 def test_thinking_status_is_separated_from_input_by_blank_line():
-    assert _status_needs_input_spacer(is_thinking=True, status_text="")
+    assert _status_needs_spacer(is_thinking=True, status_text="")
 
 
 def test_interrupt_status_is_separated_from_message_by_blank_line():
