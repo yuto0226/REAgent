@@ -4,6 +4,11 @@ from reagent.results import ErrorResult, ShellResult
 from reagent.session import Session
 
 
+class Obj:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
 class RecordingSink:
     def __init__(self):
         self.calls: list = []
@@ -147,3 +152,21 @@ def test_emit_user_dispatches_to_sink():
     sink = RecordingSink()
     Session(sink=sink).emit_user("hello from user")
     assert ("on_user", "hello from user") in sink.calls
+
+
+def test_record_usage_tracks_cached_and_reasoning_tokens():
+    s = Session(sink=SilentSink())
+
+    s.record_usage(
+        Obj(
+            prompt_tokens=10,
+            completion_tokens=5,
+            prompt_tokens_details=Obj(cached_tokens=3),
+            completion_tokens_details=Obj(reasoning_tokens=2),
+        )
+    )
+
+    assert s.prompt_tokens == 10
+    assert s.completion_tokens == 5
+    assert s.cached_tokens == 3
+    assert s.reasoning_tokens == 2

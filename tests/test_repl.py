@@ -11,6 +11,9 @@ from reagent.repl import (
     _fmt_hint,
     _fmt_status,
     _fmt_thinking,
+    _fmt_usage,
+    _make_app,
+    _print_usage,
     _tool_call_bullet_style,
 )
 
@@ -93,3 +96,49 @@ def test_ctrl_c_hint_does_not_clear_while_turn_is_active():
         hint="Press Ctrl+C again to exit",
         active_turn=True,
     )
+
+
+def test_repl_app_erases_managed_tail_on_exit():
+    app = _make_app(layout=None, key_bindings=None)
+
+    assert not app.full_screen
+    assert app.erase_when_done
+
+
+def test_usage_summary_omits_missing_optional_counts():
+    assert _fmt_usage(total=1500, input_tokens=1000, output_tokens=500, cached_tokens=0, reasoning_tokens=0) == (
+        "Usage: total=1,500 input=1,000 output=500"
+    )
+
+
+def test_usage_summary_includes_cached_and_reasoning_counts():
+    assert (
+        _fmt_usage(
+            total=107505,
+            input_tokens=92781,
+            output_tokens=14724,
+            cached_tokens=2585600,
+            reasoning_tokens=4631,
+        )
+        == "Usage: total=107,505 input=92,781 (+ 2,585,600 cached) output=14,724 (reasoning 4,631)"
+    )
+
+
+def test_usage_output_is_separated_from_previous_message():
+    console = Console(record=True, force_terminal=False)
+
+    _print_usage(console, "Usage: total=1 input=1 output=0")
+
+    assert console.export_text() == "\nUsage: total=1 input=1 output=0\n"
+
+
+def test_usage_output_is_not_highlighted():
+    console = Console(record=True, force_terminal=False)
+
+    _print_usage(console, "Usage: total=1 input=1 output=0")
+
+    usage_segments = [
+        segment for segment in console._record_buffer if "Usage" in segment.text or "total" in segment.text
+    ]
+    assert usage_segments
+    assert all(segment.style is None for segment in usage_segments)

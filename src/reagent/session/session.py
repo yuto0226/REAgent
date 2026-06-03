@@ -35,6 +35,15 @@ class ToolMessage(TypedDict):
 Message = UserMessage | AssistantMessage | AssistantToolCallMessage | ToolMessage
 
 
+def _usage_detail(usage: Any, details_name: str, token_name: str) -> int:
+    details = getattr(usage, details_name, None)
+    if details is None:
+        return 0
+    if isinstance(details, dict):
+        return int(details.get(token_name, 0) or 0)
+    return int(getattr(details, token_name, 0) or 0)
+
+
 class Session:
     def __init__(self, sink: OutputSink | None = None) -> None:
         self._sink: OutputSink = sink if sink is not None else TerminalSink()
@@ -42,6 +51,8 @@ class Session:
         self.llm_calls = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.cached_tokens = 0
+        self.reasoning_tokens = 0
         self.tool_calls = 0
         self.turns = 0
 
@@ -108,6 +119,8 @@ class Session:
         self.llm_calls += 1
         self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
         self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+        self.cached_tokens += _usage_detail(usage, "prompt_tokens_details", "cached_tokens")
+        self.reasoning_tokens += _usage_detail(usage, "completion_tokens_details", "reasoning_tokens")
 
     def _estimate_tokens(self) -> int:
         return len(json.dumps(list(self._history), default=str)) // 4

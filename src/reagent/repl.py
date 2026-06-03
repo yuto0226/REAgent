@@ -12,7 +12,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, FormattedText
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
-from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+from prompt_toolkit.key_binding import KeyBindings, KeyBindingsBase, merge_key_bindings
 from prompt_toolkit.key_binding.bindings.emacs import load_emacs_bindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
@@ -202,6 +202,44 @@ def _enter_action(text: str, *, is_running: bool) -> Literal["newline", "hint", 
 
 def _exit_hint_expired(*, now: float, last_ctrl_c: float, hint: str, active_turn: bool) -> bool:
     return not active_turn and hint == _EXIT_HINT and last_ctrl_c > 0.0 and now - last_ctrl_c >= _CTRL_C_WINDOW
+
+
+def _fmt_usage(
+    *,
+    total: int,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    reasoning_tokens: int,
+) -> str:
+    input_part = f"input={input_tokens:,}"
+    if cached_tokens:
+        input_part += f" (+ {cached_tokens:,} cached)"
+
+    output_part = f"output={output_tokens:,}"
+    if reasoning_tokens:
+        output_part += f" (reasoning {reasoning_tokens:,})"
+
+    return f"Usage: total={total:,} {input_part} {output_part}"
+
+
+def _fmt_usage_line(text: str) -> str:
+    return f"\n{text}"
+
+
+def _print_usage(console: Console, text: str) -> None:
+    console.print(_fmt_usage_line(text), highlight=False)
+
+
+def _make_app(*, layout: Layout | None, key_bindings: KeyBindingsBase | None) -> Application[None]:
+    return Application(
+        layout=layout,
+        key_bindings=key_bindings,
+        style=_STYLE,
+        full_screen=False,
+        erase_when_done=True,
+        refresh_interval=_SPIN_INTERVAL,
+    )
 
 
 async def run(session: Session) -> None:
@@ -428,12 +466,9 @@ async def run(session: Session) -> None:
         )
     )
 
-    output_app = Application(
+    output_app = _make_app(
         layout=layout,
         key_bindings=merge_key_bindings([load_emacs_bindings(), kb]),
-        style=_STYLE,
-        full_screen=False,
-        refresh_interval=_SPIN_INTERVAL,
     )
 
     async def _process_turns() -> None:
@@ -489,6 +524,16 @@ async def run(session: Session) -> None:
         await outbox.drain()
         outbox.stop()
         await asyncio.gather(outbox_task, return_exceptions=True)
+        _print_usage(
+            terminal_console,
+            _fmt_usage(
+                total=session.total_tokens,
+                input_tokens=session.prompt_tokens,
+                output_tokens=session.completion_tokens,
+                cached_tokens=session.cached_tokens,
+                reasoning_tokens=session.reasoning_tokens,
+            ),
+        )
 
 
 def start(session: Session) -> None:
