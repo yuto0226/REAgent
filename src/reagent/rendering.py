@@ -66,13 +66,16 @@ TERMINAL_THEME = Theme(
         "reagent.spinner_frame": "light_slate_blue",
         "reagent.status": "yellow",
         "reagent.prompt": "cyan",
-        "reagent.user": "bold grey100 on #554d57",
+        "reagent.user": "grey100 on #554d57",
+        "reagent.user_prefix": "grey70 on #554d57",
     }
 )
 
 ASSISTANT_BULLET_STYLE = Style.parse("white")
 TOOL_BULLET_STYLE = Style.parse("green")
 GUIDE_STYLE = Style.parse("dim")
+USER_STYLE = Style.parse("grey100 on #554d57")
+USER_PREFIX_STYLE = Style.parse("grey70 on #554d57")
 _BG_ADD = Style.parse("on #213A2B")  # dark green bg for diff additions (codex palette)
 _BG_DEL = Style.parse("on #4A221D")  # dark red bg for diff deletions (codex palette)
 _EDITOR_INDENT = "     "  # left margin for read/diff editor lines
@@ -286,7 +289,17 @@ class RichRenderer:
         width = self.console.width
         for index, line in enumerate(text.splitlines() or [""]):
             prefix = "> " if index == 0 else "  "
-            self.console.print(Text(f"{prefix}{line}".ljust(width), style="reagent.user"))
+            padding = " " * max(0, width - len(prefix) - len(line))
+            self.console.print(
+                Segments(
+                    [
+                        Segment(prefix, USER_PREFIX_STYLE),
+                        Segment(line, USER_STYLE),
+                        Segment(padding, USER_STYLE),
+                        Segment.line(),
+                    ]
+                )
+            )
 
     def status(self, msg: str) -> None:
         self.console.print()

@@ -48,6 +48,23 @@ def test_assistant_markdown_wraps_inside_console_width():
     assert all(line.startswith(("• ", "  ")) for line in lines)
 
 
+def test_user_message_prefix_is_subtle_and_content_is_not_bold():
+    console = Console(record=True, force_terminal=False, width=40, theme=TERMINAL_THEME)
+    renderer = RichRenderer(console=console)
+
+    renderer.user("hello")
+
+    prefix = next(segment for segment in console._record_buffer if segment.text == "> ")
+    content = next(segment for segment in console._record_buffer if segment.text.startswith("hello"))
+
+    assert prefix.style is not None
+    assert prefix.style.color is not None
+    assert prefix.style.color.name == "grey70"
+    assert content.style is not None
+    assert not content.style.bold
+    assert content.style.bgcolor == prefix.style.bgcolor
+
+
 def test_thinking_is_rendered_with_content():
     renderer, console = make_renderer()
 
