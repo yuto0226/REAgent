@@ -23,6 +23,22 @@ MAX_ITERS = 50
 THINKING_BUDGET = 8192
 
 
+def _consume_done(task: asyncio.Task[Any]) -> None:
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+
+
+async def _call_llm(**kwargs: Any) -> Any:
+    task = asyncio.create_task(acompletion(**kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(_consume_done)
+        raise
+
+
 def extract_reasoning(message: Any) -> str:
     rc = getattr(message, "reasoning_content", None)
     if isinstance(rc, str) and rc.strip():
@@ -65,7 +81,7 @@ async def run_turn(session: Session) -> None:
         try:
             resp = cast(
                 ModelResponse,
-                await acompletion(
+                await _call_llm(
                     model=MODEL,
                     messages=messages,
                     tools=TOOLS,

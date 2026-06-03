@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import io
-import shutil
 import signal
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, FormattedText
@@ -27,7 +24,6 @@ from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
 from rich.style import Style as RichStyle
 
-from reagent.protocol import TerminalSink
 from reagent.rendering import (
     ASSISTANT_BULLET_STYLE,
     GUIDE_STYLE,
@@ -37,7 +33,7 @@ from reagent.rendering import (
     TERMINAL_THEME,
     _fmt_elapsed,
 )
-from reagent.results import ErrorResult
+from reagent.results import ErrorResult, ToolResult
 from reagent.session import Session
 from reagent.session.turn import run_turn
 
@@ -49,9 +45,12 @@ ANSI_SEQUENCES.setdefault("\x1b[27;2;13~", Keys.F20)
 
 _SPINNER_MS = 120
 _SPIN_INTERVAL = _SPINNER_MS / 1000
-_CTRL_C_WINDOW = 1.5  # seconds between two idle Ctrl+C presses to exit
+_CTRL_C_WINDOW = 1.5
 _FLASH_INTERVAL = 0.4
 _INPUT_PREFIX = "> "
+_BUSY_HINT = "Wait for current response to finish"
+_EXIT_HINT = "Press Ctrl+C again to exit"
+_ERROR_BULLET_STYLE = RichStyle.parse("red")
 
 _STYLE = PTStyle.from_dict(
     {
@@ -67,13 +66,7 @@ _STYLE = PTStyle.from_dict(
 
 
 @dataclass
-class _LiveBlock:
-    key: str
-    render: Callable[[], str]
-
-
-@dataclass
-class _CallDisplay:
+class _Call:
     name: str
     args: dict
     started_at: float
@@ -92,62 +85,57 @@ class _ReplState:
     last_ctrl_c: float = 0.0
 
 
-class _OutputBuffer(io.TextIOBase):
-    """Captures Rich console output as a line list for O(tail) display slicing."""
+class _Outbox:
+    """Commits stable output above the active prompt."""
 
     def __init__(self) -> None:
-        self._lines: list[str | _LiveBlock] = []
-        self._partial: str = ""  # content after the last newline
-        self._app: Application | None = None
+        self._queue: asyncio.Queue[Callable[[], None] | None] = asyncio.Queue()
 
-    def write(self, s: str) -> int:
-        combined = self._partial + s
-        *complete, self._partial = combined.split("\n")
-        self._lines.extend(complete)
-        if self._app is not None:
-            self._app.invalidate()
-        return len(s)
+    def submit(self, print_fn: Callable[[], None]) -> None:
+        self._queue.put_nowait(print_fn)
 
-    def add_replaceable_block(self, key: str, render: Callable[[], str]) -> None:
-        self._lines.append(_LiveBlock(key, render))
-        if self._app is not None:
-            self._app.invalidate()
+    async def run(self) -> None:
+        while True:
+            print_fn = await self._queue.get()
+            try:
+                if print_fn is None:
+                    return
+                await run_in_terminal(print_fn)
+            finally:
+                self._queue.task_done()
 
-    def flush(self) -> None:
-        pass
+    async def drain(self) -> None:
+        await self._queue.join()
 
-    def _rendered_lines(self) -> list[str]:
-        lines: list[str] = []
-        for line in self._lines:
-            if isinstance(line, _LiveBlock):
-                lines.extend(line.render().splitlines())
-            else:
-                lines.append(line)
-        return lines
+    def stop(self) -> None:
+        self._queue.put_nowait(None)
 
-    def get_tail(self, n: int) -> str:
-        """Return the last n lines as a joined string — O(n), not O(total)."""
-        if n <= 0:
-            return ""
 
-        tail: list[str] = []
-        if self._partial:
-            tail.append(self._partial)
+class _PendingCalls:
+    def __init__(self) -> None:
+        self._cap_console = Console(force_terminal=True, theme=TERMINAL_THEME, highlight=False)
+        self._cap_renderer = RichRenderer(console=self._cap_console, use_live=False)
+        self.calls: dict[str, _Call] = {}
 
-        for line in reversed(self._lines):
-            if len(tail) >= n:
-                break
-            rendered_lines = line.render().splitlines() if isinstance(line, _LiveBlock) else [line]
-            tail.extend(reversed(rendered_lines[-(n - len(tail)) :]))
+    def render(self, *, width: int) -> str:
+        self._cap_console.width = width
+        chunks: list[str] = []
 
-        return "\n".join(reversed(tail))
+        for tool_call_id, call in self.calls.items():
+            elapsed = time.monotonic() - call.started_at
+            bullet = _tool_call_bullet_style(call.state, elapsed=elapsed)
+            with self._cap_console.capture() as capture:
+                self._cap_renderer.tool_call(
+                    call.name,
+                    call.args,
+                    tool_call_id=tool_call_id,
+                    bullet_style=bullet,
+                )
+            raw = capture.get().strip("\n")
+            if raw:
+                chunks.append(raw)
 
-    def getvalue(self) -> str:
-        """Full content for terminal replay after app exit."""
-        result = "\n".join(self._rendered_lines())
-        if self._partial:
-            return result + "\n" + self._partial if result else self._partial
-        return result + "\n" if result else ""
+        return "\n".join(chunks)
 
 
 def _tool_call_bullet_style(
@@ -158,18 +146,13 @@ def _tool_call_bullet_style(
     if state == "success":
         return TOOL_BULLET_STYLE
     if state == "error":
-        return RichStyle.parse("red")
+        return _ERROR_BULLET_STYLE
     if int(elapsed / _FLASH_INTERVAL) % 2:
         return ASSISTANT_BULLET_STYLE
     return GUIDE_STYLE
 
 
 class _ContinuationIndent(Processor):
-    """Indent continuation lines to align with the first line after '> '.
-
-    Must shift cursor mappings by 2 to account for the added indent characters.
-    """
-
     _N = len(_INPUT_PREFIX)
 
     def apply_transformation(self, transformation_input) -> Transformation:
@@ -183,16 +166,16 @@ class _ContinuationIndent(Processor):
         )
 
 
-def _sep_text() -> FormattedText:
-    return FormattedText([("class:separator", "─" * shutil.get_terminal_size().columns)])
-
-
-def _status_needs_spacer(*, is_thinking: bool, status_text: str) -> bool:
-    return is_thinking or bool(status_text)
+def _sep_text(width: int) -> FormattedText:
+    return FormattedText([("class:separator", "─" * width)])
 
 
 def _fmt_status(status_text: str, *, style_class: str) -> FormattedText:
     return FormattedText([(f"class:{style_class}", status_text)])
+
+
+def _fmt_hint(hint: str) -> FormattedText:
+    return FormattedText([("class:hint", f" {hint}" if hint else "")])
 
 
 def _fmt_thinking(frame: str, *, elapsed: float, token_part: str) -> FormattedText:
@@ -204,78 +187,108 @@ def _fmt_thinking(frame: str, *, elapsed: float, token_part: str) -> FormattedTe
     )
 
 
+def _enter_action(text: str, *, is_running: bool) -> Literal["newline", "hint", "exit", "submit", "ignore"]:
+    if text.endswith("\\"):
+        return "newline"
+    stripped = text.strip()
+    if not stripped:
+        return "ignore"
+    if is_running:
+        return "hint"
+    if stripped.lower() in ("/quit", "/exit"):
+        return "exit"
+    return "submit"
+
+
+def _exit_hint_expired(*, now: float, last_ctrl_c: float, hint: str, active_turn: bool) -> bool:
+    return not active_turn and hint == _EXIT_HINT and last_ctrl_c > 0.0 and now - last_ctrl_c >= _CTRL_C_WINDOW
+
+
 async def run(session: Session) -> None:
-    output = _OutputBuffer()
-
-    # use_live=False prevents Rich Live from emitting cursor-movement escape codes
-    # that would corrupt the static ANSI buffer.
-    renderer = RichRenderer(
-        console=Console(file=output, force_terminal=True, theme=TERMINAL_THEME),  # type: ignore[arg-type]
-        use_live=False,
-    )
-
+    terminal_console = Console(force_terminal=True, theme=TERMINAL_THEME)
+    terminal_renderer = RichRenderer(console=terminal_console, use_live=False)
     state = _ReplState()
-    _tool_call_displays: dict[str, _CallDisplay] = {}
+    calls = _PendingCalls()
+    outbox = _Outbox()
+
+    def _invalidate() -> None:
+        if output_app is not None:
+            output_app.invalidate()
 
     def _set_status(msg: str, *, style_class: str = "status") -> None:
         state.status_text = msg
         state.status_style = style_class
-        if output._app:
-            output._app.invalidate()
+        _invalidate()
 
-    def _render_tool_call(tool_call_id: str) -> str:
-        display = _tool_call_displays[tool_call_id]
-        bullet_style = _tool_call_bullet_style(
-            display.state,
-            elapsed=time.monotonic() - display.started_at,
-        )
-        with renderer.console.capture() as capture:
-            renderer.tool_call(
-                display.name,
-                display.args,
-                tool_call_id=tool_call_id,
-                bullet_style=bullet_style,
-            )
-        return capture.get()
+    def _commit(render: Callable[[str], None], text: str) -> None:
+        if text:
+            outbox.submit(lambda: render(text))
 
-    class _Sink(TerminalSink):
+    def _show_call(tool_call_id: str, name: str, args: dict) -> None:
+        calls.calls[tool_call_id] = _Call(name=name, args=args, started_at=time.monotonic())
+        _invalidate()
+
+    def _commit_result(tool_call_id: str, result: ToolResult) -> None:
+        call = calls.calls.pop(tool_call_id, None)
+
+        def _print() -> None:
+            if call is not None:
+                style = _ERROR_BULLET_STYLE if isinstance(result, ErrorResult) else TOOL_BULLET_STYLE
+                terminal_renderer.tool_call(call.name, call.args, tool_call_id=tool_call_id, bullet_style=style)
+            terminal_renderer.tool_result(tool_call_id, result)
+
+        outbox.submit(_print)
+        _invalidate()
+
+    class _Sink:
+        def on_assistant(self, text: str) -> None:
+            _commit(terminal_renderer.assistant, text)
+
+        def on_think(self, text: str) -> None:
+            _commit(terminal_renderer.think, text)
+
         def on_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
-            _tool_call_displays[tool_call_id] = _CallDisplay(
-                name=name,
-                args=args,
-                started_at=time.monotonic(),
-            )
-            output.add_replaceable_block(tool_call_id, lambda: _render_tool_call(tool_call_id))
+            _show_call(tool_call_id, name, args)
 
         def on_tool_result(self, tool_call_id: str, result) -> None:
-            display = _tool_call_displays.get(tool_call_id)
-            if display is not None:
-                display.state = "error" if isinstance(result, ErrorResult) else "success"
-            super().on_tool_result(tool_call_id, result)
+            _commit_result(tool_call_id, result)
+
+        def on_user(self, text: str) -> None:
+            _commit(terminal_renderer.user, text)
 
         def on_status(self, msg: str) -> None:
             _set_status(msg)
 
+        def on_prompt(self, text: str) -> None:
+            pass
+
         def on_thinking_start(self) -> None:
-            pass  # spinner driven by state.thinking_at set in _process_turns
+            pass
 
         def on_thinking_stop(self) -> None:
-            pass  # "thinking for Xs" written by _process_turns after clearing state.thinking_at
+            pass
 
         def on_thinking_update(self, phase: str, tokens: int) -> None:
             state.think_phase = phase
             state.think_tokens = tokens
-            if output._app:
-                output._app.invalidate()
+            _invalidate()
 
-    session._sink = _Sink(renderer)
+    session._sink = _Sink()
 
     buf = Buffer(name="input", multiline=True)
     input_queue: asyncio.Queue[str | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
+    output_app: Application[None] | None = None
+    hint_clear_task: asyncio.Task | None = None
+
+    def _is_running() -> bool:
+        return state.active_turn is not None
 
     def _is_thinking() -> bool:
         return state.thinking_at is not None
+
+    def _get_calls() -> ANSI:
+        return ANSI(calls.render(width=terminal_console.width))
 
     def _get_status() -> FormattedText:
         t = state.thinking_at
@@ -289,34 +302,54 @@ async def run(session: Session) -> None:
             return _fmt_status(state.status_text, style_class=state.status_style)
         return FormattedText([])
 
+    def _has_calls() -> bool:
+        return bool(calls.calls)
+
     def _has_status() -> bool:
         return _is_thinking() or bool(state.status_text)
 
-    def _has_status_spacer() -> bool:
-        return _status_needs_spacer(
-            is_thinking=_is_thinking(),
-            status_text=state.status_text,
-        )
+    def _has_gap() -> bool:
+        return _has_calls() or _has_status()
 
     def _get_hint() -> FormattedText:
-        return FormattedText([("class:hint", f" {state.hint}")]) if state.hint else FormattedText([])
+        return _fmt_hint(state.hint)
+
+    def _schedule_ctrl_c_hint_clear() -> None:
+        nonlocal hint_clear_task
+        if hint_clear_task is not None:
+            hint_clear_task.cancel()
+
+        async def _clear_after_window() -> None:
+            await asyncio.sleep(_CTRL_C_WINDOW)
+            if _exit_hint_expired(
+                now=time.monotonic(),
+                last_ctrl_c=state.last_ctrl_c,
+                hint=state.hint,
+                active_turn=state.active_turn is not None,
+            ):
+                state.hint = ""
+                state.last_ctrl_c = 0.0
+                _invalidate()
+
+        hint_clear_task = asyncio.create_task(_clear_after_window())
 
     kb = KeyBindings()
 
     @kb.add("enter")
     def _submit(event) -> None:
-        text = buf.text
-        if text.endswith("\\"):
+        action = _enter_action(buf.text, is_running=_is_running())
+        if action == "newline":
             event.current_buffer.delete_before_cursor()
             event.current_buffer.insert_text("\n")
-            return
-        event.current_buffer.reset()
-        stripped = text.strip()
-        if not stripped:
-            return
-        if stripped.lower() in ("/quit", "/exit"):
+        elif action == "hint":
+            state.hint = _BUSY_HINT
+            _invalidate()
+        elif action == "exit":
+            event.current_buffer.reset()
             input_queue.put_nowait(None)
-        else:
+        elif action == "submit":
+            text = buf.text
+            event.current_buffer.reset()
             state.hint = ""
             input_queue.put_nowait(text)
 
@@ -339,11 +372,10 @@ async def run(session: Session) -> None:
             else:
                 state.last_ctrl_c = now
                 event.current_buffer.reset()
-                state.hint = "Press Ctrl+C again to exit"
-                if output._app:
-                    output._app.invalidate()
+                state.hint = _EXIT_HINT
+                _schedule_ctrl_c_hint_clear()
+                _invalidate()
 
-    # ESC cancels the running turn; filtered out when idle so emacs bindings work normally.
     @kb.add("escape", filter=Condition(_is_thinking), eager=True)
     def _interrupt(event) -> None:
         t = state.active_turn
@@ -355,24 +387,18 @@ async def run(session: Session) -> None:
         if not buf.text:
             input_queue.put_nowait(None)
 
-    def _get_output() -> ANSI:
-        reserved = (
-            4
-            + (1 if _has_status() else 0)
-            + (1 if _has_status_spacer() else 0)
-            + (1 if _has_status_spacer() else 0)
-            + (1 if state.hint else 0)
-        )
-        available = max(1, shutil.get_terminal_size().lines - reserved)
-        return ANSI(output.get_tail(available))
-
     layout = Layout(
+        # Active tail: gap, pending calls, status, input separator, input,
+        # hint separator, hint/blank.
         HSplit(
             [
-                Window(FormattedTextControl(_get_output), dont_extend_height=True),
                 ConditionalContainer(
                     Window(height=1),
-                    filter=Condition(_has_status_spacer),
+                    filter=Condition(_has_gap),
+                ),
+                ConditionalContainer(
+                    Window(FormattedTextControl(_get_calls), dont_extend_height=True),
+                    filter=Condition(_has_calls),
                 ),
                 ConditionalContainer(
                     Window(FormattedTextControl(_get_status), height=1),
@@ -380,9 +406,9 @@ async def run(session: Session) -> None:
                 ),
                 ConditionalContainer(
                     Window(height=1),
-                    filter=Condition(_has_status_spacer),
+                    filter=Condition(_has_status),
                 ),
-                Window(FormattedTextControl(_sep_text), height=1),
+                Window(FormattedTextControl(lambda: _sep_text(terminal_console.width)), height=1),
                 Window(
                     BufferControl(
                         buffer=buf,
@@ -396,33 +422,29 @@ async def run(session: Session) -> None:
                     height=Dimension(min=1, max=10),
                     dont_extend_height=True,
                 ),
-                Window(FormattedTextControl(_sep_text), height=1),
-                ConditionalContainer(
-                    Window(FormattedTextControl(_get_hint), height=1),
-                    filter=Condition(lambda: bool(state.hint)),
-                ),
-                Window(),  # spacer: absorbs remaining space below the input
+                Window(FormattedTextControl(lambda: _sep_text(terminal_console.width)), height=1),
+                Window(FormattedTextControl(_get_hint), height=1),
             ]
         )
     )
 
-    app: Application[None] = Application(
+    output_app = Application(
         layout=layout,
         key_bindings=merge_key_bindings([load_emacs_bindings(), kb]),
         style=_STYLE,
-        full_screen=True,
+        full_screen=False,
         refresh_interval=_SPIN_INTERVAL,
     )
-    output._app = app
 
     async def _process_turns() -> None:
         while True:
             user_input = await input_queue.get()
             if user_input is None:
-                app.exit()
+                output_app.exit()
                 return
 
             session.emit_user(user_input)
+            await outbox.drain()
             session.add_user(user_input)
 
             turn_task = asyncio.create_task(run_turn(session))
@@ -432,6 +454,7 @@ async def run(session: Session) -> None:
             state.think_phase = ""
             state.think_tokens = 0
             session.emit_thinking_start()
+            _invalidate()
 
             interrupted = False
             try:
@@ -447,24 +470,25 @@ async def run(session: Session) -> None:
                 state.active_turn = None
                 session.emit_thinking_stop()
                 loop.remove_signal_handler(signal.SIGINT)
-                app.invalidate()
+                await outbox.drain()
+                output_app.invalidate()
 
             if interrupted:
                 _set_status("■ Conversation interrupted")
 
     process_task = asyncio.create_task(_process_turns())
+    outbox_task = asyncio.create_task(outbox.run())
     try:
-        await app.run_async()
+        await output_app.run_async()
     finally:
         process_task.cancel()
         await asyncio.gather(process_task, return_exceptions=True)
-
-    # full_screen uses the alternate screen buffer; on exit replay to the main screen
-    # so the conversation history remains visible.
-    content = output.getvalue()
-    if content:
-        sys.stdout.write(content)
-        sys.stdout.flush()
+        if hint_clear_task is not None:
+            hint_clear_task.cancel()
+            await asyncio.gather(hint_clear_task, return_exceptions=True)
+        await outbox.drain()
+        outbox.stop()
+        await asyncio.gather(outbox_task, return_exceptions=True)
 
 
 def start(session: Session) -> None:

@@ -1,33 +1,18 @@
+import time
+
+from rich.console import Console
+
+from reagent.rendering import TERMINAL_THEME
 from reagent.repl import (
-    _OutputBuffer,
+    _Call,
+    _PendingCalls,
+    _enter_action,
+    _exit_hint_expired,
+    _fmt_hint,
     _fmt_status,
     _fmt_thinking,
-    _status_needs_spacer,
     _tool_call_bullet_style,
 )
-
-
-def test_regular_status_is_separated_from_message_by_blank_line():
-    assert _status_needs_spacer(is_thinking=False, status_text="compacting...")
-
-
-def test_regular_status_is_separated_from_input_by_blank_line():
-    assert _status_needs_spacer(is_thinking=False, status_text="compacting...")
-
-
-def test_thinking_status_is_separated_from_message_by_blank_line():
-    assert _status_needs_spacer(is_thinking=True, status_text="")
-
-
-def test_thinking_status_is_separated_from_input_by_blank_line():
-    assert _status_needs_spacer(is_thinking=True, status_text="")
-
-
-def test_interrupt_status_is_separated_from_message_by_blank_line():
-    assert _status_needs_spacer(
-        is_thinking=False,
-        status_text="■ Conversation interrupted",
-    )
 
 
 def test_thinking_for_text_is_gray_and_not_indented():
@@ -49,27 +34,6 @@ def test_thinking_frame_is_purple_and_text_is_gray():
     ]
 
 
-def test_output_buffer_replaceable_block_updates_in_place():
-    output = _OutputBuffer()
-    state = ["pending"]
-    output.write("before\n")
-    output.add_replaceable_block("call-1", lambda: f"• shell(pwd) [{state[0]}]\n")
-    output.write("after\n")
-
-    state[0] = "success"
-
-    assert output.getvalue() == "before\n• shell(pwd) [success]\nafter\n"
-
-
-def test_output_buffer_replaceable_block_counts_rendered_lines_in_tail():
-    output = _OutputBuffer()
-    output.write("before\n")
-    output.add_replaceable_block("call-1", lambda: "\n• shell(echo hi)\n        continued)\n")
-    output.write("after\n")
-
-    assert output.get_tail(3) == "• shell(echo hi)\n        continued)\nafter"
-
-
 def test_pending_tool_call_bullet_flashes_between_gray_and_white():
     assert _tool_call_bullet_style("pending", elapsed=0.0).dim
     style = _tool_call_bullet_style("pending", elapsed=0.4)
@@ -81,3 +45,51 @@ def test_completed_tool_call_bullet_is_green_or_red():
     error = _tool_call_bullet_style("error", elapsed=0.0)
     assert success.color is not None and success.color.name == "green"
     assert error.color is not None and error.color.name == "red"
+
+
+def test_pending_calls_render_tool_call():
+    display = _PendingCalls()
+    display.calls["call-1"] = _Call(name="shell", args={"command": "ls"}, started_at=time.monotonic())
+
+    output = display.render(width=80)
+
+    assert "• shell(ls)" in Console(force_terminal=False, width=80, theme=TERMINAL_THEME).render_str(output).plain
+
+
+def test_enter_submits_when_idle():
+    assert _enter_action("hello", is_running=False) == "submit"
+
+
+def test_enter_keeps_draft_when_running():
+    assert _enter_action("next prompt", is_running=True) == "hint"
+
+
+def test_enter_backslash_adds_newline_even_when_running():
+    assert _enter_action("draft\\", is_running=True) == "newline"
+
+
+def test_enter_exit_command_only_exits_when_idle():
+    assert _enter_action("/exit", is_running=False) == "exit"
+    assert _enter_action("/exit", is_running=True) == "hint"
+
+
+def test_empty_hint_still_renders_reserved_line():
+    assert _fmt_hint("") == [("class:hint", "")]
+
+
+def test_ctrl_c_hint_clears_after_exit_window():
+    assert _exit_hint_expired(
+        now=3.0,
+        last_ctrl_c=1.0,
+        hint="Press Ctrl+C again to exit",
+        active_turn=False,
+    )
+
+
+def test_ctrl_c_hint_does_not_clear_while_turn_is_active():
+    assert not _exit_hint_expired(
+        now=3.0,
+        last_ctrl_c=1.0,
+        hint="Press Ctrl+C again to exit",
+        active_turn=True,
+    )
