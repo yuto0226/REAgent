@@ -73,6 +73,9 @@ TERMINAL_THEME = Theme(
 ASSISTANT_BULLET_STYLE = Style.parse("white")
 TOOL_BULLET_STYLE = Style.parse("green")
 GUIDE_STYLE = Style.parse("dim")
+_BG_ADD = Style.parse("on #213A2B")  # dark green bg for diff additions (codex palette)
+_BG_DEL = Style.parse("on #4A221D")  # dark red bg for diff deletions (codex palette)
+_EDITOR_INDENT = "     "  # left margin for read/diff editor lines
 
 
 class RichRenderer:
@@ -136,41 +139,68 @@ class RichRenderer:
                 self._print_tree(self._clip_lines(output), style="reagent.guide")
             case ReadResult(content=content, path=path, start_line=start_line):
                 if content:
+                    n = len(content.splitlines())
+                    self._print_header(Text(f"Read {n} lines"))
                     self._print_read(content, path, start_line)
                 else:
                     self._print_tree(["(empty file)"], style="reagent.guide")
-            case DiffResult(diff=diff, path=path, message=msg):
+            case DiffResult(diff=diff, path=path, message=msg, kind=kind):
                 if diff:
+                    raw_lines = diff.splitlines()
+                    added = sum(1 for ln in raw_lines if ln.startswith("+") and not ln.startswith("+++"))
+                    removed = sum(1 for ln in raw_lines if ln.startswith("-") and not ln.startswith("---"))
+                    if kind == "write":
+                        filename = Path(path).name
+                        summary: Text = Text(f"Wrote {filename}  +{added}  -{removed}")
+                    else:
+                        summary = Text(f"Added {added}, removed {removed}")
+                    self._print_header(summary)
                     self._print_diff(diff, path)
                 else:
                     self._print_tree([msg], style="reagent.success")
 
     def _print_read(self, content: str, path: str, start_line: int) -> None:
         lines = content.splitlines()
-        omitted = 0
-        if len(lines) > self.max_lines:
-            omitted = len(lines) - self.max_lines
+        total = len(lines)
+        if total > self.max_lines:
             lines = lines[: self.max_lines]
+
+        num_w = len(str(start_line + len(lines) - 1))
         ext = Path(path).suffix.lstrip(".")
-        self.console.print(
-            Syntax(
-                "\n".join(lines),
-                ext or "text",
-                line_numbers=True,
-                start_line=start_line,
-                theme="ansi_dark",
-                background_color="default",
-            )
+        inner_width = max(20, self.console.width - (len(_EDITOR_INDENT) + 3 + num_w))
+        syntax = Syntax(
+            "\n".join(lines),
+            ext or "text",
+            theme="ansi_dark",
+            background_color="default",
+            padding=(0, 0),
         )
-        if omitted:
-            self.console.print(Text(f"    ... +{omitted} lines omitted", style="dim"))
+        rendered = self.console.render_lines(syntax, self.console.options.update(width=inner_width))
+
+        for i, seg_line in enumerate(rendered):
+            ln = start_line + i
+            self.console.print(
+                Segments(
+                    [
+                        Segment(_EDITOR_INDENT, GUIDE_STYLE),
+                        Segment(f" {ln:>{num_w}}", GUIDE_STYLE),
+                        Segment("  "),
+                        *self._rstrip_segments(seg_line),
+                        Segment.line(),
+                    ]
+                )
+            )
+
+        if total > self.max_lines:
+            self.console.print(Text(f"{_EDITOR_INDENT}... +{total - self.max_lines} lines omitted", style="dim"))
 
     def _print_diff(self, unified_diff: str, path: str) -> None:
         old_ln = new_ln = 0
         printed = 0
         total = 0
 
-        lines_to_print: list[tuple[str, str, str, str]] = []
+        parsed: list[tuple[int, str, str, str]] = []  # (ln, marker, content, status)
+        hunk_starts: set[int] = set()
         for raw in unified_diff.splitlines():
             if raw.startswith(("---", "+++")):
                 continue
@@ -179,30 +209,75 @@ class RichRenderer:
                 if m:
                     old_ln = int(m.group(1))
                     new_ln = int(m.group(2))
+                if parsed:
+                    hunk_starts.add(len(parsed))
                 continue
             if raw.startswith("+"):
-                num, marker, style = f"{new_ln:>4}", "+", "reagent.success"
+                ln, marker, status = new_ln, "+", "add"
                 new_ln += 1
             elif raw.startswith("-"):
-                num, marker, style = "    ", "-", "reagent.error"
+                ln, marker, status = old_ln, "-", "del"
                 old_ln += 1
             else:
-                num, marker, style = f"{new_ln:>4}", " ", "dim"
+                ln, marker, status = new_ln, " ", "ctx"
                 old_ln += 1
                 new_ln += 1
             total += 1
             if printed < self.max_lines:
-                lines_to_print.append((num, marker, raw[1:], style))
+                parsed.append((ln, marker, raw[1:], status))
                 printed += 1
 
-        for i, (num, marker, content, style) in enumerate(lines_to_print):
-            prefix = "  ⎿ " if i == 0 else "    "
+        if not parsed:
+            return
+
+        num_w = len(str(max(ln for ln, _, _, _ in parsed)))
+        ext = Path(path).suffix.lstrip(".")
+        inner_width = max(20, self.console.width - (len(_EDITOR_INDENT) + 3 + num_w))
+        syntax = Syntax(
+            "\n".join(c for _, _, c, _ in parsed),
+            ext or "text",
+            theme="ansi_dark",
+            background_color="default",
+            padding=(0, 0),
+        )
+        rendered = self.console.render_lines(syntax, self.console.options.update(width=inner_width))
+
+        for i, ((ln, marker, _, status), seg_line) in enumerate(zip(parsed, rendered)):
+            if i in hunk_starts:
+                self.console.print(Text(_EDITOR_INDENT + " " * num_w + "⋮", style="dim"))
+
+            if status == "add":
+                marker_style = Style.parse("green")
+                overlay: Style | None = _BG_ADD
+            elif status == "del":
+                marker_style = Style.parse("red")
+                overlay = _BG_DEL + Style(dim=True)
+            else:
+                marker_style = GUIDE_STYLE
+                overlay = None
+
+            if overlay is not None:
+                num_seg = Segment(f" {ln:>{num_w}}", GUIDE_STYLE + overlay)
+                marker_seg = Segment(marker, marker_style + overlay)
+                # keep trailing spaces so bg fills to inner_width; don't rstrip
+                content_segs = [Segment(s.text, (s.style or Style()) + overlay) for s in seg_line]
+                gutter_segs = [num_seg, marker_seg, Segment(" ", overlay)]
+            else:
+                content_segs = self._rstrip_segments(seg_line)
+                gutter_segs = [Segment(f" {ln:>{num_w}}", GUIDE_STYLE), Segment(marker, marker_style), Segment(" ")]
             self.console.print(
-                Text.assemble((prefix, GUIDE_STYLE), (num, GUIDE_STYLE), (f" {marker} ", style), (content, style))
+                Segments(
+                    [
+                        Segment(_EDITOR_INDENT, GUIDE_STYLE),
+                        *gutter_segs,
+                        *content_segs,
+                        Segment.line(),
+                    ]
+                )
             )
 
         if total > self.max_lines:
-            self.console.print(Text(f"    ... +{total - self.max_lines} lines omitted", style="dim"))
+            self.console.print(Text(f"{_EDITOR_INDENT}... +{total - self.max_lines} lines omitted", style="dim"))
 
     def user(self, text: str) -> None:
         if not text:
@@ -374,6 +449,9 @@ class RichRenderer:
         omitted = len(lines) - head_count - tail_count
 
         return [*lines[:head_count], f"... +{omitted} lines omitted", *lines[-tail_count:]]
+
+    def _print_header(self, text: Text) -> None:
+        self.console.print(Text.assemble(("  ⎿  ", GUIDE_STYLE), text))
 
     def _print_tree(self, lines: list[str], style: str) -> None:
         if not lines:

@@ -28,6 +28,7 @@ def edit_file(path: str, start_line: int, end_line: int | None, content: str) ->
             path=path,
             diff=diff,
             message=f"Replaced lines {start_line}-{e} in {path}",
+            kind="edit",
         )
 
     except (FileNotFoundError, PermissionError, OSError) as e:

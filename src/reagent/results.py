@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 
 @dataclass
@@ -32,6 +32,7 @@ class DiffResult:
     path: str
     diff: str
     message: str
+    kind: Literal["write", "edit"] = "edit"
 
     @property
     def text(self) -> str:

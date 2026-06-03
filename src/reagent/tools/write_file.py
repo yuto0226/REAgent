@@ -27,6 +27,7 @@ def write_file(path: str, content: str) -> ToolResult:
             path=path,
             diff=diff,
             message=f"Written {len(content)} bytes to {path}",
+            kind="write",
         )
 
     except (PermissionError, OSError) as e:

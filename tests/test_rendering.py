@@ -260,6 +260,17 @@ def test_read_file_result_renders_content_with_syntax():
     assert "print" in output
 
 
+def test_read_file_result_uses_gutter_format():
+    renderer, console = make_renderer()
+
+    renderer.tool_result("call-1", ReadResult(path="src/foo.py", content="alpha\nbeta"))
+
+    output = console.export_text()
+    lines = [ln for ln in output.splitlines() if ln.strip()]
+    assert lines[0].startswith("  ⎿ ")
+    assert lines[1].startswith("    ")
+
+
 def test_read_file_result_shows_line_numbers():
     renderer, console = make_renderer()
 
@@ -313,12 +324,45 @@ def test_write_file_result_with_diff_shows_gutter_format():
     )
 
     output = console.export_text()
-    # gutter shows line numbers and + marker, no ---/+++ headers
     assert "hello" in output
     assert "world" in output
     assert "---" not in output
     assert "+++" not in output
-    assert "+" in output  # marker present
+    assert "+" in output
+
+
+def test_diff_deleted_line_shows_old_line_number():
+    renderer, console = make_renderer()
+
+    renderer.tool_result(
+        "call-1",
+        DiffResult(
+            path="/tmp/foo.py",
+            diff="--- /tmp/foo.py\n+++ /tmp/foo.py\n@@ -5,1 +5,1 @@\n-old\n+new\n",
+            message="",
+        ),
+    )
+
+    output = console.export_text()
+    assert "old" in output
+    assert "new" in output
+    # both old and new line numbers visible (not blank for deletion)
+    assert "5" in output
+
+
+def test_diff_multi_hunk_shows_separator():
+    renderer, console = make_renderer()
+
+    renderer.tool_result(
+        "call-1",
+        DiffResult(
+            path="/tmp/foo.py",
+            diff=("--- /tmp/foo.py\n+++ /tmp/foo.py\n@@ -1,1 +1,1 @@\n-aaa\n+bbb\n@@ -10,1 +10,1 @@\n-xxx\n+yyy\n"),
+            message="",
+        ),
+    )
+
+    assert "⋮" in console.export_text()
 
 
 def test_tool_result_empty_output_produces_no_output():
