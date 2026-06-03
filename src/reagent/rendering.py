@@ -120,12 +120,12 @@ class RichRenderer:
         self.console.print()
 
         if name == "shell" and isinstance(args.get("command"), str):
-            self._print_shell_call(args["command"], bullet_style=bullet_style)
+            self._shell_call(args["command"], bullet_style=bullet_style)
             return
 
         formatted_args = self._fmt_args(name, args)
         lines = self._wrap_call(name, formatted_args)
-        self._print_tool_call_lines(lines, bullet_style=bullet_style)
+        self._call_lines(lines, bullet_style=bullet_style)
 
     def tool_result(self, tool_call_id: str, result: ToolResult) -> None:
         del tool_call_id
@@ -257,7 +257,7 @@ class RichRenderer:
             prefix = "• " if index == 0 else "  "
             self.console.print(Text.assemble((prefix, bullet_style), (line, content_style)))
 
-    def _print_shell_call(self, command: str, *, bullet_style: Style) -> None:
+    def _shell_call(self, command: str, *, bullet_style: Style) -> None:
         logical_lines = command.splitlines() or [""]
         indent = " " * len("• shell(")
 
@@ -291,7 +291,7 @@ class RichRenderer:
                     )
                 )
 
-    def _print_tool_call_lines(self, lines: list[str], *, bullet_style: Style) -> None:
+    def _call_lines(self, lines: list[str], *, bullet_style: Style) -> None:
         first, *rest = lines
         self.console.print(Text.assemble(("•", bullet_style), " ", (first, "reagent.tool_call")))
 
@@ -379,14 +379,14 @@ class RichRenderer:
         if not lines:
             return
 
-        wrapped_lines = self._wrap_result_lines(lines)
+        wrapped_lines = self._wrap_lines(lines)
         first, *rest = wrapped_lines
         self.console.print(Text.assemble(("  ⎿ ", GUIDE_STYLE), (first, style)))
 
         for line in rest:
             self.console.print(Text.assemble(("    ", GUIDE_STYLE), (line, style)))
 
-    def _wrap_result_lines(self, lines: list[str]) -> list[str]:
+    def _wrap_lines(self, lines: list[str]) -> list[str]:
         width = max(20, self.console.width - 4)
         wrapped: list[str] = []
 

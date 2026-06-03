@@ -49,8 +49,8 @@ ANSI_SEQUENCES.setdefault("\x1b[27;2;13~", Keys.F20)
 
 _SPINNER_MS = 120
 _SPIN_INTERVAL = _SPINNER_MS / 1000
-_DOUBLE_CTRL_C_WINDOW = 1.5  # seconds between two idle Ctrl+C presses to exit
-_TOOL_CALL_FLASH_INTERVAL = 0.4
+_CTRL_C_WINDOW = 1.5  # seconds between two idle Ctrl+C presses to exit
+_FLASH_INTERVAL = 0.4
 _INPUT_PREFIX = "> "
 
 _STYLE = PTStyle.from_dict(
@@ -67,13 +67,13 @@ _STYLE = PTStyle.from_dict(
 
 
 @dataclass
-class _ReplaceableBlock:
+class _LiveBlock:
     key: str
     render: Callable[[], str]
 
 
 @dataclass
-class _ToolCallDisplay:
+class _CallDisplay:
     name: str
     args: dict
     started_at: float
@@ -83,11 +83,11 @@ class _ToolCallDisplay:
 @dataclass
 class _ReplState:
     thinking_at: float | None = None
-    thinking_phase: str = ""
-    thinking_tokens: int = 0
+    think_phase: str = ""
+    think_tokens: int = 0
     status_text: str = ""
     status_style: str = "status"
-    hint_text: str = ""
+    hint: str = ""
     active_turn: asyncio.Task | None = None
     last_ctrl_c: float = 0.0
 
@@ -96,7 +96,7 @@ class _OutputBuffer(io.TextIOBase):
     """Captures Rich console output as a line list for O(tail) display slicing."""
 
     def __init__(self) -> None:
-        self._lines: list[str | _ReplaceableBlock] = []
+        self._lines: list[str | _LiveBlock] = []
         self._partial: str = ""  # content after the last newline
         self._app: Application | None = None
 
@@ -109,7 +109,7 @@ class _OutputBuffer(io.TextIOBase):
         return len(s)
 
     def add_replaceable_block(self, key: str, render: Callable[[], str]) -> None:
-        self._lines.append(_ReplaceableBlock(key, render))
+        self._lines.append(_LiveBlock(key, render))
         if self._app is not None:
             self._app.invalidate()
 
@@ -119,7 +119,7 @@ class _OutputBuffer(io.TextIOBase):
     def _rendered_lines(self) -> list[str]:
         lines: list[str] = []
         for line in self._lines:
-            if isinstance(line, _ReplaceableBlock):
+            if isinstance(line, _LiveBlock):
                 lines.extend(line.render().splitlines())
             else:
                 lines.append(line)
@@ -137,7 +137,7 @@ class _OutputBuffer(io.TextIOBase):
         for line in reversed(self._lines):
             if len(tail) >= n:
                 break
-            rendered_lines = line.render().splitlines() if isinstance(line, _ReplaceableBlock) else [line]
+            rendered_lines = line.render().splitlines() if isinstance(line, _LiveBlock) else [line]
             tail.extend(reversed(rendered_lines[-(n - len(tail)) :]))
 
         return "\n".join(reversed(tail))
@@ -159,7 +159,7 @@ def _tool_call_bullet_style(
         return TOOL_BULLET_STYLE
     if state == "error":
         return RichStyle.parse("red")
-    if int(elapsed / _TOOL_CALL_FLASH_INTERVAL) % 2:
+    if int(elapsed / _FLASH_INTERVAL) % 2:
         return ASSISTANT_BULLET_STYLE
     return GUIDE_STYLE
 
@@ -191,11 +191,11 @@ def _status_needs_spacer(*, is_thinking: bool, status_text: str) -> bool:
     return is_thinking or bool(status_text)
 
 
-def _format_status(status_text: str, *, style_class: str) -> FormattedText:
+def _fmt_status(status_text: str, *, style_class: str) -> FormattedText:
     return FormattedText([(f"class:{style_class}", status_text)])
 
 
-def _format_thinking(frame: str, *, elapsed: float, token_part: str) -> FormattedText:
+def _fmt_thinking(frame: str, *, elapsed: float, token_part: str) -> FormattedText:
     return FormattedText(
         [
             ("class:thinking-frame", frame),
@@ -215,7 +215,7 @@ async def run(session: Session) -> None:
     )
 
     state = _ReplState()
-    _tool_call_displays: dict[str, _ToolCallDisplay] = {}
+    _tool_call_displays: dict[str, _CallDisplay] = {}
 
     def _set_status(msg: str, *, style_class: str = "status") -> None:
         state.status_text = msg
@@ -240,7 +240,7 @@ async def run(session: Session) -> None:
 
     class _Sink(TerminalSink):
         def on_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
-            _tool_call_displays[tool_call_id] = _ToolCallDisplay(
+            _tool_call_displays[tool_call_id] = _CallDisplay(
                 name=name,
                 args=args,
                 started_at=time.monotonic(),
@@ -263,8 +263,8 @@ async def run(session: Session) -> None:
             pass  # "thinking for Xs" written by _process_turns after clearing state.thinking_at
 
         def on_thinking_update(self, phase: str, tokens: int) -> None:
-            state.thinking_phase = phase
-            state.thinking_tokens = tokens
+            state.think_phase = phase
+            state.think_tokens = tokens
             if output._app:
                 output._app.invalidate()
 
@@ -282,11 +282,11 @@ async def run(session: Session) -> None:
         if t is not None:
             elapsed = time.monotonic() - t
             frame = SPINNER_FRAMES[int(elapsed * 1000 / _SPINNER_MS) % len(SPINNER_FRAMES)]
-            arrow = "↑" if state.thinking_phase == "up" else "↓"
-            token_part = f"  {arrow}{state.thinking_tokens}" if state.thinking_tokens else ""
-            return _format_thinking(frame, elapsed=elapsed, token_part=token_part)
+            arrow = "↑" if state.think_phase == "up" else "↓"
+            token_part = f"  {arrow}{state.think_tokens}" if state.think_tokens else ""
+            return _fmt_thinking(frame, elapsed=elapsed, token_part=token_part)
         if state.status_text:
-            return _format_status(state.status_text, style_class=state.status_style)
+            return _fmt_status(state.status_text, style_class=state.status_style)
         return FormattedText([])
 
     def _has_status() -> bool:
@@ -299,7 +299,7 @@ async def run(session: Session) -> None:
         )
 
     def _get_hint() -> FormattedText:
-        return FormattedText([("class:hint", f" {state.hint_text}")]) if state.hint_text else FormattedText([])
+        return FormattedText([("class:hint", f" {state.hint}")]) if state.hint else FormattedText([])
 
     kb = KeyBindings()
 
@@ -317,7 +317,7 @@ async def run(session: Session) -> None:
         if stripped.lower() in ("/quit", "/exit"):
             input_queue.put_nowait(None)
         else:
-            state.hint_text = ""
+            state.hint = ""
             input_queue.put_nowait(text)
 
     @kb.add("f20")
@@ -330,16 +330,16 @@ async def run(session: Session) -> None:
         t = state.active_turn
         if t is not None:
             t.cancel()
-            state.hint_text = ""
+            state.hint = ""
             state.last_ctrl_c = 0.0
         else:
             now = time.monotonic()
-            if now - state.last_ctrl_c <= _DOUBLE_CTRL_C_WINDOW:
+            if now - state.last_ctrl_c <= _CTRL_C_WINDOW:
                 input_queue.put_nowait(None)
             else:
                 state.last_ctrl_c = now
                 event.current_buffer.reset()
-                state.hint_text = "Press Ctrl+C again to exit"
+                state.hint = "Press Ctrl+C again to exit"
                 if output._app:
                     output._app.invalidate()
 
@@ -361,7 +361,7 @@ async def run(session: Session) -> None:
             + (1 if _has_status() else 0)
             + (1 if _has_status_spacer() else 0)
             + (1 if _has_status_spacer() else 0)
-            + (1 if state.hint_text else 0)
+            + (1 if state.hint else 0)
         )
         available = max(1, shutil.get_terminal_size().lines - reserved)
         return ANSI(output.get_tail(available))
@@ -399,7 +399,7 @@ async def run(session: Session) -> None:
                 Window(FormattedTextControl(_sep_text), height=1),
                 ConditionalContainer(
                     Window(FormattedTextControl(_get_hint), height=1),
-                    filter=Condition(lambda: bool(state.hint_text)),
+                    filter=Condition(lambda: bool(state.hint)),
                 ),
                 Window(),  # spacer: absorbs remaining space below the input
             ]
@@ -429,8 +429,8 @@ async def run(session: Session) -> None:
             state.active_turn = turn_task
             loop.add_signal_handler(signal.SIGINT, turn_task.cancel)
             state.thinking_at = time.monotonic()
-            state.thinking_phase = ""
-            state.thinking_tokens = 0
+            state.think_phase = ""
+            state.think_tokens = 0
             session.emit_thinking_start()
 
             interrupted = False
@@ -441,8 +441,8 @@ async def run(session: Session) -> None:
             finally:
                 elapsed = time.monotonic() - (state.thinking_at or 0.0)
                 state.thinking_at = None
-                state.thinking_phase = ""
-                state.thinking_tokens = 0
+                state.think_phase = ""
+                state.think_tokens = 0
                 _set_status(f"• thinking for {_fmt_elapsed(elapsed)}", style_class="thinking-for")
                 state.active_turn = None
                 session.emit_thinking_stop()

@@ -19,7 +19,7 @@ from reagent.session.session import Session  # noqa: E402
 from reagent.tools import TOOLS, TOOL_HANDLERS  # noqa: E402
 
 MODEL = os.environ["MODEL_ID"]
-MAX_ITERATIONS = 50
+MAX_ITERS = 50
 THINKING_BUDGET = 8192
 
 
@@ -52,7 +52,7 @@ async def run_turn(session: Session) -> None:
     compact_fn = make_compact_fn(MODEL)  # TODO: make_compact_fn should use acompletion; sync call blocks event loop
     sys_prompt = system_prompt()
 
-    for _ in range(MAX_ITERATIONS):
+    for _ in range(MAX_ITERS):
         before = session._estimate_tokens()
         session.compact(compact_fn)
         after = session._estimate_tokens()
@@ -122,4 +122,4 @@ async def run_turn(session: Session) -> None:
 
             session.add_tool_result(tc.id, result)
 
-    session.add_assistant(f"Stopped: reached iteration limit of {MAX_ITERATIONS}.")
+    session.add_assistant(f"Stopped: reached iteration limit of {MAX_ITERS}.")
