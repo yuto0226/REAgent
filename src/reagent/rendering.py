@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from rich.console import Console, RenderableType
+from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.segment import Segment, Segments
@@ -19,7 +19,7 @@ from rich.text import Text
 from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, ToolResult
 
 
-_SPINNER_FRAMES = "☰☱☲☳☴☵☶☷"
+SPINNER_FRAMES = "☰☱☲☳☴☵☶☷"
 _SPINNER_MS = 80
 
 
@@ -32,32 +32,26 @@ def _fmt_elapsed(elapsed: float) -> str:
 
 
 class _ThinkingStatus:
-    """Live-renderable that updates elapsed time and token counts on every refresh.
-
-    Call set_up() / set_down() to switch direction and update the token count.
-    """
+    """Live-renderable that updates elapsed time and token counts on every refresh."""
 
     def __init__(self) -> None:
         self._started_at = time.monotonic()
         self._phase: str = "up"
         self._tokens: int = 0
 
-    def set_up(self, tokens: int) -> None:
-        self._phase = "up"
-        self._tokens = tokens
-
-    def set_down(self, tokens: int) -> None:
-        self._phase = "down"
+    def update(self, phase: str, tokens: int) -> None:
+        self._phase = phase
         self._tokens = tokens
 
     def __rich_console__(self, console, options):
         elapsed = time.monotonic() - self._started_at
-        frame = _SPINNER_FRAMES[int(elapsed * 1000 / _SPINNER_MS) % len(_SPINNER_FRAMES)]
+        frame = SPINNER_FRAMES[int(elapsed * 1000 / _SPINNER_MS) % len(SPINNER_FRAMES)]
         arrow = "↑" if self._phase == "up" else "↓"
         token_part = f"  {arrow}{self._tokens}" if self._tokens else ""
         stats = f"({elapsed:.1f}s{token_part})"
+
         yield Segment.line()
-        yield Text.assemble((f"{frame} thinking  ", "reagent.status"), (stats, "dim"))
+        yield Text.assemble((frame, "reagent.spinner_frame"), (f" thinking  {stats}", "dim"))
 
 
 TERMINAL_THEME = Theme(
@@ -69,8 +63,10 @@ TERMINAL_THEME = Theme(
         "reagent.guide": "dim",
         "reagent.success": "green",
         "reagent.error": "red",
+        "reagent.spinner_frame": "light_slate_blue",
         "reagent.status": "yellow",
         "reagent.prompt": "cyan",
+        "reagent.user": "bold grey100 on #554d57",
     }
 )
 
@@ -80,9 +76,10 @@ GUIDE_STYLE = Style.parse("dim")
 
 
 class RichRenderer:
-    def __init__(self, console: Console | None = None, max_lines: int = 40) -> None:
+    def __init__(self, console: Console | None = None, max_lines: int = 40, use_live: bool = True) -> None:
         self.console = console if console is not None else Console(theme=TERMINAL_THEME)
         self.max_lines = max_lines
+        self._use_live = use_live
         self._live: Live | None = None
         self._thinking_status: _ThinkingStatus | None = None
 
@@ -93,7 +90,14 @@ class RichRenderer:
         self.console.print()
 
         try:
-            self._print_hanging_renderable(Markdown(text), bullet_style=ASSISTANT_BULLET_STYLE)
+            rendered = self.console.render_lines(
+                Markdown(text), self.console.options.update(width=max(20, self.console.width - 2))
+            )
+            for index, line in enumerate(rendered):
+                prefix = "• " if index == 0 else "  "
+                self.console.print(
+                    Segments([Segment(prefix, ASSISTANT_BULLET_STYLE), *self._rstrip_segments(line), Segment.line()])
+                )
         except Exception:
             self._print_hanging_lines(text.splitlines(), bullet_style=ASSISTANT_BULLET_STYLE, content_style="")
 
@@ -104,16 +108,24 @@ class RichRenderer:
         self.console.print()
         self._print_hanging_lines(text.splitlines(), bullet_style=GUIDE_STYLE, content_style="reagent.think")
 
-    def tool_call(self, name: str, args: dict[str, Any]) -> None:
+    def tool_call(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        tool_call_id: str = "",
+        bullet_style: Style = TOOL_BULLET_STYLE,
+    ) -> None:
+        del tool_call_id
         self.console.print()
 
         if name == "shell" and isinstance(args.get("command"), str):
-            self._print_shell_call(args["command"])
+            self._print_shell_call(args["command"], bullet_style=bullet_style)
             return
 
         formatted_args = self._fmt_args(name, args)
         lines = self._wrap_call(name, formatted_args)
-        self._print_tool_call_lines(lines)
+        self._print_tool_call_lines(lines, bullet_style=bullet_style)
 
     def tool_result(self, tool_call_id: str, result: ToolResult) -> None:
         del tool_call_id
@@ -154,9 +166,11 @@ class RichRenderer:
             self.console.print(Text(f"    ... +{omitted} lines omitted", style="dim"))
 
     def _print_diff(self, unified_diff: str, path: str) -> None:
-        diff_lines: list[tuple[str, str, str, str]] = []  # (num, marker, content, style)
         old_ln = new_ln = 0
+        printed = 0
+        total = 0
 
+        lines_to_print: list[tuple[str, str, str, str]] = []
         for raw in unified_diff.splitlines():
             if raw.startswith(("---", "+++")):
                 continue
@@ -176,13 +190,12 @@ class RichRenderer:
                 num, marker, style = f"{new_ln:>4}", " ", "dim"
                 old_ln += 1
                 new_ln += 1
-            diff_lines.append((num, marker, raw[1:], style))
+            total += 1
+            if printed < self.max_lines:
+                lines_to_print.append((num, marker, raw[1:], style))
+                printed += 1
 
-        total = len(diff_lines)
-        if total > self.max_lines:
-            diff_lines = diff_lines[: self.max_lines]
-
-        for i, (num, marker, content, style) in enumerate(diff_lines):
+        for i, (num, marker, content, style) in enumerate(lines_to_print):
             prefix = "  ⎿ " if i == 0 else "    "
             self.console.print(
                 Text.assemble((prefix, GUIDE_STYLE), (num, GUIDE_STYLE), (f" {marker} ", style), (content, style))
@@ -191,7 +204,17 @@ class RichRenderer:
         if total > self.max_lines:
             self.console.print(Text(f"    ... +{total - self.max_lines} lines omitted", style="dim"))
 
+    def user(self, text: str) -> None:
+        if not text:
+            return
+        self.console.print()
+        width = self.console.width
+        for index, line in enumerate(text.splitlines() or [""]):
+            prefix = "> " if index == 0 else "  "
+            self.console.print(Text(f"{prefix}{line}".ljust(width), style="reagent.user"))
+
     def status(self, msg: str) -> None:
+        self.console.print()
         self.console.print(Text(msg, style="reagent.status"))
 
     def prompt(self, text: str) -> None:
@@ -199,6 +222,9 @@ class RichRenderer:
         self.console.file.flush()
 
     def thinking_start(self) -> None:
+        if not self._use_live:
+            self._thinking_status = _ThinkingStatus()
+            return
         if self._live is None:
             self._thinking_status = _ThinkingStatus()
             self._live = Live(
@@ -211,28 +237,17 @@ class RichRenderer:
 
     def thinking_update(self, phase: str, tokens: int) -> None:
         if self._thinking_status is not None:
-            if phase == "up":
-                self._thinking_status.set_up(tokens)
-            else:
-                self._thinking_status.set_down(tokens)
+            self._thinking_status.update(phase, tokens)
 
     def thinking_stop(self) -> None:
-        if self._live is None or self._thinking_status is None:
+        if self._thinking_status is None:
             return
         elapsed = time.monotonic() - self._thinking_status._started_at
-        self._live.stop()
-        self._live = None
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
         self._thinking_status = None
-        self.console.print(Text(f"\n• thinking for {_fmt_elapsed(elapsed)}", style="dim"))
-
-    def _print_hanging_renderable(self, renderable: RenderableType, bullet_style: Style) -> None:
-        lines = self.console.render_lines(
-            renderable, self.console.options.update(width=max(20, self.console.width - 2))
-        )
-
-        for index, line in enumerate(lines):
-            prefix = "• " if index == 0 else "  "
-            self.console.print(Segments([Segment(prefix, bullet_style), *self._rstrip_segments(line), Segment.line()]))
+        self.console.print(Text(f"• thinking for {_fmt_elapsed(elapsed)}", style="dim"))
 
     def _print_hanging_lines(self, lines: list[str], bullet_style: Style, content_style: str) -> None:
         if not lines:
@@ -242,7 +257,7 @@ class RichRenderer:
             prefix = "• " if index == 0 else "  "
             self.console.print(Text.assemble((prefix, bullet_style), (line, content_style)))
 
-    def _print_shell_call(self, command: str) -> None:
+    def _print_shell_call(self, command: str, *, bullet_style: Style) -> None:
         logical_lines = command.splitlines() or [""]
         indent = " " * len("• shell(")
 
@@ -251,9 +266,7 @@ class RichRenderer:
             is_last_logical = index == len(logical_lines) - 1
 
             prefix_segments = (
-                [Segment("• ", TOOL_BULLET_STYLE), Segment("shell(")]
-                if is_first_logical
-                else [Segment(indent, GUIDE_STYLE)]
+                [Segment("• ", bullet_style), Segment("shell(")] if is_first_logical else [Segment(indent, GUIDE_STYLE)]
             )
             suffix_segments = [Segment(")")] if is_last_logical else []
             prefix_width = len("• shell(") if is_first_logical else len(indent)
@@ -278,9 +291,9 @@ class RichRenderer:
                     )
                 )
 
-    def _print_tool_call_lines(self, lines: list[str]) -> None:
+    def _print_tool_call_lines(self, lines: list[str], *, bullet_style: Style) -> None:
         first, *rest = lines
-        self.console.print(Text.assemble(("•", "reagent.tool_bullet"), " ", (first, "reagent.tool_call")))
+        self.console.print(Text.assemble(("•", bullet_style), " ", (first, "reagent.tool_call")))
 
         for line in rest:
             self.console.print(Text.assemble(("  ", "reagent.guide"), (line, "reagent.tool_call")))

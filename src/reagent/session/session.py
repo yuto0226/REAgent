@@ -81,8 +81,11 @@ class Session:
         self._history.append(ToolMessage(role="tool", tool_call_id=tool_call_id, content=result.text))
         self._sink.on_tool_result(tool_call_id, result)
 
-    def emit_tool_call(self, name: str, args: dict) -> None:
-        self._sink.on_tool_call(name, args)
+    def emit_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
+        self._sink.on_tool_call(tool_call_id, name, args)
+
+    def emit_user(self, text: str) -> None:
+        self._sink.on_user(text)
 
     def emit_status(self, msg: str) -> None:
         self._sink.on_status(msg)

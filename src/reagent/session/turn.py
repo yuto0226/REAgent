@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, cast
@@ -89,8 +90,8 @@ async def run_turn(session: Session) -> None:
             session.add_assistant("Stopped: response hit max tokens. The output may be incomplete.")
             return
 
-        thought = extract_reasoning(choice0.message) or text
-        if thought and choice0.finish_reason == "tool_calls":
+        thought = extract_reasoning(choice0.message)
+        if thought:
             session.add_think(thought)
 
         if choice0.finish_reason != "tool_calls":
@@ -111,10 +112,13 @@ async def run_turn(session: Session) -> None:
                 session.add_tool_result(tc.id, ErrorResult(f"Error: invalid tool arguments: {exc}"))
                 continue
 
-            session.emit_tool_call(name, tool_input)
+            session.emit_tool_call(tc.id, name, tool_input)
             handler = TOOL_HANDLERS.get(name)
-            # TODO: wrap handler in run_in_executor; subprocess.run() blocks event loop
-            result = handler(tool_input) if handler else ErrorResult(f"Error: unknown tool {name!r}")
+            result = (
+                await asyncio.to_thread(handler, tool_input)
+                if handler
+                else ErrorResult(f"Error: unknown tool {name!r}")
+            )
 
             session.add_tool_result(tc.id, result)
 

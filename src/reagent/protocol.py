@@ -9,8 +9,9 @@ if TYPE_CHECKING:
 class Renderer(Protocol):
     def assistant(self, text: str) -> None: ...
     def think(self, text: str) -> None: ...
-    def tool_call(self, name: str, args: dict) -> None: ...
+    def tool_call(self, name: str, args: dict, *, tool_call_id: str = "") -> None: ...
     def tool_result(self, tool_call_id: str, result: "ToolResult") -> None: ...
+    def user(self, text: str) -> None: ...
     def status(self, msg: str) -> None: ...
     def prompt(self, text: str) -> None: ...
     def thinking_start(self) -> None: ...
@@ -22,8 +23,9 @@ class Renderer(Protocol):
 class OutputSink(Protocol):
     def on_assistant(self, text: str) -> None: ...
     def on_think(self, text: str) -> None: ...
-    def on_tool_call(self, name: str, args: dict) -> None: ...
+    def on_tool_call(self, tool_call_id: str, name: str, args: dict) -> None: ...
     def on_tool_result(self, tool_call_id: str, result: "ToolResult") -> None: ...
+    def on_user(self, text: str) -> None: ...
     def on_status(self, msg: str) -> None: ...
     def on_prompt(self, text: str) -> None: ...
     def on_thinking_start(self) -> None: ...
@@ -37,7 +39,6 @@ class TerminalSink:
             from reagent.rendering import RichRenderer
 
             renderer = RichRenderer()
-
         self._renderer = renderer
 
     def on_assistant(self, text: str) -> None:
@@ -46,11 +47,14 @@ class TerminalSink:
     def on_think(self, text: str) -> None:
         self._renderer.think(text)
 
-    def on_tool_call(self, name: str, args: dict) -> None:
-        self._renderer.tool_call(name, args)
+    def on_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
+        self._renderer.tool_call(name, args, tool_call_id=tool_call_id)
 
     def on_tool_result(self, tool_call_id: str, result: "ToolResult") -> None:
         self._renderer.tool_result(tool_call_id, result)
+
+    def on_user(self, text: str) -> None:
+        self._renderer.user(text)
 
     def on_status(self, msg: str) -> None:
         self._renderer.status(msg)
@@ -75,10 +79,13 @@ class SilentSink:
     def on_think(self, text: str) -> None:
         pass
 
-    def on_tool_call(self, name: str, args: dict) -> None:
+    def on_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
         pass
 
     def on_tool_result(self, tool_call_id: str, result: "ToolResult") -> None:
+        pass
+
+    def on_user(self, text: str) -> None:
         pass
 
     def on_status(self, msg: str) -> None:

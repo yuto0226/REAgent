@@ -14,11 +14,14 @@ class RecordingSink:
     def on_think(self, text: str) -> None:
         self.calls.append(("on_think", text))
 
-    def on_tool_call(self, name: str, args: dict) -> None:
-        self.calls.append(("on_tool_call", name, args))
+    def on_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
+        self.calls.append(("on_tool_call", tool_call_id, name, args))
 
     def on_tool_result(self, tool_call_id: str, result) -> None:
         self.calls.append(("on_tool_result", tool_call_id, result))
+
+    def on_user(self, text: str) -> None:
+        self.calls.append(("on_user", text))
 
     def on_status(self, msg: str) -> None:
         self.calls.append(("on_status", msg))
@@ -69,7 +72,7 @@ def test_add_tool_result_calls_sink(capsys):
 
 def test_emit_tool_call_calls_sink(capsys):
     s = Session(sink=SilentSink())
-    s.emit_tool_call("bash", {"cmd": "ls"})
+    s.emit_tool_call("id1", "bash", {"cmd": "ls"})
     assert capsys.readouterr().out == ""
 
 
@@ -112,8 +115,8 @@ def test_add_tool_result_error_stores_message_in_history():
 
 def test_emit_tool_call_dispatches_to_sink():
     sink = RecordingSink()
-    Session(sink=sink).emit_tool_call("bash", {"cmd": "ls"})
-    assert ("on_tool_call", "bash", {"cmd": "ls"}) in sink.calls
+    Session(sink=sink).emit_tool_call("id1", "bash", {"cmd": "ls"})
+    assert ("on_tool_call", "id1", "bash", {"cmd": "ls"}) in sink.calls
 
 
 def test_emit_status_dispatches_to_sink():
@@ -138,3 +141,9 @@ def test_emit_thinking_update_dispatches_to_sink():
     sink = RecordingSink()
     Session(sink=sink).emit_thinking_update("up", 1234)
     assert ("on_thinking_update", "up", 1234) in sink.calls
+
+
+def test_emit_user_dispatches_to_sink():
+    sink = RecordingSink()
+    Session(sink=sink).emit_user("hello from user")
+    assert ("on_user", "hello from user") in sink.calls

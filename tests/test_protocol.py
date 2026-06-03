@@ -13,11 +13,14 @@ class RecordingRenderer:
     def think(self, text: str) -> None:
         self.calls.append(("think", text))
 
-    def tool_call(self, name: str, args: dict) -> None:
-        self.calls.append(("tool_call", name, args))
+    def tool_call(self, name: str, args: dict, *, tool_call_id: str = "") -> None:
+        self.calls.append(("tool_call", tool_call_id, name, args))
 
     def tool_result(self, tool_call_id: str, result) -> None:
         self.calls.append(("tool_result", tool_call_id, result))
+
+    def user(self, text: str) -> None:
+        self.calls.append(("user", text))
 
     def status(self, msg: str) -> None:
         self.calls.append(("status", msg))
@@ -47,7 +50,7 @@ def test_silent_sink_produces_no_output(capsys):
     sink = SilentSink()
     sink.on_assistant("hello")
     sink.on_think("thinking")
-    sink.on_tool_call("bash", {"cmd": "ls"})
+    sink.on_tool_call("id1", "bash", {"cmd": "ls"})
     sink.on_tool_result("id1", ShellResult("result"))
     sink.on_status("status msg")
     assert capsys.readouterr().out == ""
@@ -69,7 +72,7 @@ def test_terminal_sink_on_think(capsys):
 
 
 def test_terminal_sink_on_tool_call(capsys):
-    TerminalSink().on_tool_call("bash", {"cmd": "ls"})
+    TerminalSink().on_tool_call("id1", "bash", {"cmd": "ls"})
     assert "bash" in capsys.readouterr().out
 
 
@@ -90,14 +93,16 @@ def test_terminal_sink_delegates_to_renderer():
     result = ShellResult("output")
     sink.on_assistant("hello")
     sink.on_think("thinking")
-    sink.on_tool_call("shell", {"command": "pwd"})
+    sink.on_tool_call("call-1", "shell", {"command": "pwd"})
     sink.on_tool_result("call-1", result)
+    sink.on_user("hi there")
     sink.on_status("status")
 
     assert renderer.calls == [
         ("assistant", "hello"),
         ("think", "thinking"),
-        ("tool_call", "shell", {"command": "pwd"}),
+        ("tool_call", "call-1", "shell", {"command": "pwd"}),
         ("tool_result", "call-1", result),
+        ("user", "hi there"),
         ("status", "status"),
     ]

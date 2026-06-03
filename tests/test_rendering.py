@@ -1,7 +1,7 @@
 from rich.console import Console
 from rich.color import ColorType
 
-from reagent.rendering import RichRenderer
+from reagent.rendering import RichRenderer, TERMINAL_THEME, _ThinkingStatus
 from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult
 
 
@@ -354,6 +354,18 @@ def test_thinking_start_and_stop_do_not_raise():
     renderer.thinking_start()
     renderer.thinking_stop()
     assert "thinking for" in console.export_text()
+
+
+def test_live_thinking_frame_is_magenta_and_text_is_dim():
+    console = Console(record=True, force_terminal=False, theme=TERMINAL_THEME)
+
+    console.print(_ThinkingStatus())
+
+    segments = console._record_buffer
+    assert any(
+        segment.text in "☰☱☲☳☴☵☶☷" and segment.style and segment.style.color is not None for segment in segments
+    )
+    assert any(segment.text.startswith(" thinking") and segment.style and segment.style.dim for segment in segments)
 
 
 def test_thinking_stop_clears_elapsed_on_next_start():
