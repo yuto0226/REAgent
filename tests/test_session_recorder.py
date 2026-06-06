@@ -7,7 +7,7 @@ from reagent.session.recorder import (
     SessionRecorder,
     find_file,
     read_entries,
-    provider_message,
+    to_provider_message,
 )
 
 
@@ -181,10 +181,10 @@ def test_read_entries_skips_json_entries_with_missing_required_fields(tmp_path):
     assert [entry["seq"] for entry in entries] == [3]
 
 
-def test_provider_message_strips_local_ids_without_mutating_original():
+def test_to_provider_message_strips_local_ids_without_mutating_original():
     message = {"role": "assistant", "content": "ok", "id": "local", "parent_id": "parent"}
 
-    sanitized = provider_message(message)
+    sanitized = to_provider_message(message)
 
     assert sanitized == {"role": "assistant", "content": "ok"}
     assert message["id"] == "local"

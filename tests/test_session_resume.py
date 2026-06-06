@@ -8,7 +8,7 @@ from reagent.protocol import SilentSink
 from reagent.results import ReadResult, ShellResult
 import reagent.session.session as session_module
 from reagent.session import Session, load_session
-from reagent.session.recorder import SessionEntry, SessionRecorder, provider_message
+from reagent.session.recorder import SessionEntry, SessionRecorder, to_provider_message
 
 
 def test_load_session_replays_messages_usage_and_attaches_recorder(tmp_path):
@@ -54,7 +54,7 @@ def test_load_session_replays_messages_usage_and_attaches_recorder(tmp_path):
     assert loaded.completion_tokens == 5
     assert loaded.cached_tokens == 3
     assert loaded.reasoning_tokens == 2
-    assert list(loaded.messages) == [provider_message(message) for message in recorder_session.messages]
+    assert list(loaded.messages) == [to_provider_message(message) for message in recorder_session.messages]
     assert all("id" not in message and "parent_id" not in message for message in loaded.messages)
 
 

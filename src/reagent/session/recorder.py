@@ -42,7 +42,7 @@ def _data_root() -> Path:
 _INTERNAL_FIELDS = frozenset({"id", "parent_id", "is_think", "result_type", "result_data"})
 
 
-def provider_message(message: Mapping[str, Any]) -> dict[str, Any]:
+def to_provider_message(message: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in message.items() if key not in _INTERNAL_FIELDS}
 
 

@@ -16,7 +16,7 @@ from litellm.types.utils import ModelResponse  # noqa: E402
 from reagent.compact import make_compact_fn  # noqa: E402
 from reagent.results import ErrorResult  # noqa: E402
 from reagent.session.prompt import system_prompt  # noqa: E402
-from reagent.session.recorder import provider_message  # noqa: E402
+from reagent.session.recorder import to_provider_message  # noqa: E402
 from reagent.session.session import Session  # noqa: E402
 from reagent.tools import TOOLS, TOOL_HANDLERS  # noqa: E402
 
@@ -66,8 +66,8 @@ def extract_text(message: Any) -> str:
     return "\n".join(texts).strip()
 
 
-def provider_messages(messages: tuple[Mapping[str, Any], ...]) -> list[dict[str, Any]]:
-    return [provider_message(message) for message in messages]
+def to_provider_messages(messages: tuple[Mapping[str, Any], ...]) -> list[dict[str, Any]]:
+    return [to_provider_message(message) for message in messages]
 
 
 async def run_turn(session: Session) -> None:
@@ -82,7 +82,7 @@ async def run_turn(session: Session) -> None:
         if after < before:
             session.emit_status(f"[compact: {before} → {after} tokens]")
 
-        messages = [{"role": "system", "content": sys_prompt}, *provider_messages(session.messages)]
+        messages = [{"role": "system", "content": sys_prompt}, *to_provider_messages(session.messages)]
         session.emit_thinking_update("up", session._estimate_tokens())
         try:
             resp = cast(
