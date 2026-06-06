@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import bisect
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 from reagent.protocol import OutputSink, TerminalSink
 from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, ToolResult
-from reagent.session.recorder import SessionEntry, SessionRecorder, jsonable, read_entries, to_provider_message
+from reagent.session.recorder import SessionRecorder, jsonable, read_entries, to_provider_message
 
 TOKEN_LIMIT = 60_000
 
@@ -38,23 +38,6 @@ class ToolMessage(TypedDict):
 Message = UserMessage | AssistantMessage | AssistantToolCallMessage | ToolMessage
 
 
-class Recorder(Protocol):
-    path: Path
-
-    def record_message(self, message: Mapping[str, Any]) -> SessionEntry: ...
-
-    def record_usage(
-        self,
-        *,
-        prompt_tokens: int,
-        completion_tokens: int,
-        cached_tokens: int,
-        reasoning_tokens: int,
-    ) -> None: ...
-
-    def record_compact(self, *, start_seq: int, end_seq: int, replacement_message: dict[str, Any]) -> SessionEntry: ...
-
-
 def _usage_detail(usage: Any, details_name: str, token_name: str) -> int:
     details = getattr(usage, details_name, None)
     if details is None:
@@ -65,7 +48,7 @@ def _usage_detail(usage: Any, details_name: str, token_name: str) -> int:
 
 
 class Session:
-    def __init__(self, sink: OutputSink | None = None, recorder: Recorder | None = None) -> None:
+    def __init__(self, sink: OutputSink | None = None, recorder: SessionRecorder | None = None) -> None:
         self._sink: OutputSink = sink if sink is not None else TerminalSink()
         self._recorder = recorder
         # Each entry is (message, jsonl_seq). seq is None when the message has no
