@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, TypedDict, cast
 
 from reagent.protocol import OutputSink, TerminalSink
-from reagent.results import ShellResult, ToolResult
+from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, ToolResult
 from reagent.session.recorder import SessionEntry, SessionRecorder, jsonable, read_entries, provider_message
 
 TOKEN_LIMIT = 60_000
@@ -107,7 +107,10 @@ class Session:
 
     def add_think(self, content: str) -> None:
         message = AssistantMessage(role="assistant", content=content)
-        self._append(message)
+        seq: int | None = None
+        if self._recorder is not None:
+            seq = self._recorder.record_message({**message, "is_think": True})["seq"]
+        self._history.append((message, seq))
         if content:
             self._sink.on_think(content)
 
@@ -122,7 +125,12 @@ class Session:
 
     def add_tool_result(self, tool_call_id: str, result: ToolResult) -> None:
         message = ToolMessage(role="tool", tool_call_id=tool_call_id, content=result.text)
-        self._append(message)
+        seq: int | None = None
+        if self._recorder is not None:
+            extra = {"result_type": type(result).__name__, "result_data": jsonable(vars(result))}
+            seq = self._recorder.record_message({**message, **extra})["seq"]
+
+        self._history.append((message, seq))
         self._sink.on_tool_result(tool_call_id, result)
 
     def emit_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
@@ -197,8 +205,7 @@ class Session:
             return
 
         replacement = UserMessage(role="user", content=f"[Context summary: {summary}]")
-        self._history[1:compact_end] = [(replacement, None)]
-
+        entry_seq: int | None = None
         if self._recorder is not None and compacted_seqs:
             entry = self._recorder.record_compact(
                 start_seq=min(compacted_seqs),
@@ -207,7 +214,8 @@ class Session:
             )
             # Store the compact entry's own seq so a subsequent compact can
             # identify and replace this summary by seq range during replay.
-            self._history[1] = (replacement, entry["seq"])
+            entry_seq = entry["seq"]
+        self._history[1:compact_end] = [(replacement, entry_seq)]
 
     def truncate(self) -> None:
         # Drop oldest turns (from index 1) until history fits within TOKEN_LIMIT.
@@ -220,10 +228,10 @@ class Session:
 
 
 def _apply_compact(
-    replayed: list[tuple[int, Message]],
+    replayed: list[tuple[int, dict[str, Any]]],
     entry_seq: int,
     data: dict[str, Any],
-) -> list[tuple[int, Message]]:
+) -> list[tuple[int, dict[str, Any]]]:
     start_seq = data.get("start_seq")
     end_seq = data.get("end_seq")
     replacement = data.get("replacement_message")
@@ -231,14 +239,34 @@ def _apply_compact(
     if not (isinstance(start_seq, int) and isinstance(end_seq, int) and isinstance(replacement, dict)):
         return replayed
 
-    filtered = [(s, m) for s, m in replayed if not start_seq <= s <= end_seq]
-    restored = cast(Message, provider_message(replacement))
-
+    # Sort before filtering: chained compacts can leave replayed out-of-order
+    # (a prior compact's entry_seq may exceed later message seqs), which would
+    # make bisect_left produce the wrong insertion index.
+    filtered = sorted(
+        [(s, m) for s, m in replayed if not start_seq <= s <= end_seq],
+        key=lambda t: t[0],
+    )
     insert_at = bisect.bisect_left([s for s, _ in filtered], start_seq)
     # Use entry_seq (the compact entry's own seq) so a subsequent compact can
     # identify and replace this summary by seq range during replay.
-    filtered.insert(insert_at, (entry_seq, restored))
+    filtered.insert(insert_at, (entry_seq, cast(dict[str, Any], replacement)))
     return filtered
+
+
+def _reconstruct_result(result_type: str, content: str, result_data: Any) -> ToolResult:
+    if isinstance(result_data, dict):
+        try:
+            if result_type == "ShellResult":
+                return ShellResult(**result_data)
+            if result_type == "ReadResult":
+                return ReadResult(**result_data)
+            if result_type == "DiffResult":
+                return DiffResult(**result_data)
+            if result_type == "ErrorResult":
+                return ErrorResult(**result_data)
+        except TypeError:
+            pass
+    return ShellResult(content)
 
 
 def _parse_tool_call(tc: Any) -> tuple[str, str, dict[str, Any]] | None:
@@ -260,6 +288,8 @@ def _parse_tool_call(tc: Any) -> tuple[str, str, dict[str, Any]] | None:
     if isinstance(raw, str):
         try:
             args = json.loads(raw)
+            if not isinstance(args, dict):
+                args = {}
         except json.JSONDecodeError:
             args = {}
     elif isinstance(raw, dict):
@@ -270,23 +300,25 @@ def _parse_tool_call(tc: Any) -> tuple[str, str, dict[str, Any]] | None:
     return call_id, name, args
 
 
-def _emit(sink: OutputSink, msg: Message) -> None:
-    """Forward one provider message to the sink (user / assistant / tool roles only)."""
-    m = cast(dict[str, Any], msg)
-    role = m.get("role")
+def _emit(sink: OutputSink, data: dict[str, Any]) -> None:
+    """Forward one raw JSONL message entry to the sink."""
+    role = data.get("role")
 
     if role == "user":
-        content = m.get("content")
+        content = data.get("content")
         if isinstance(content, str):
             sink.on_user(content)
         return
 
     if role == "assistant":
-        content = m.get("content")
+        content = data.get("content")
         if isinstance(content, str) and content:
-            sink.on_assistant(content)
+            if data.get("is_think"):
+                sink.on_think(content)
+            else:
+                sink.on_assistant(content)
 
-        tool_calls = m.get("tool_calls")
+        tool_calls = data.get("tool_calls")
         if isinstance(tool_calls, list):
             for tc in tool_calls:
                 parsed = _parse_tool_call(tc)
@@ -295,28 +327,38 @@ def _emit(sink: OutputSink, msg: Message) -> None:
         return
 
     if role == "tool":
-        call_id = m.get("tool_call_id")
-        content = m.get("content")
+        call_id = data.get("tool_call_id")
+        content = data.get("content", "")
         if isinstance(call_id, str) and isinstance(content, str):
-            sink.on_tool_result(call_id, ShellResult(content))
+            result = _reconstruct_result(
+                data.get("result_type", "ShellResult"),
+                content,
+                data.get("result_data"),
+            )
+            sink.on_tool_result(call_id, result)
 
 
 def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
     resolved = Path(path).expanduser()
     entries, _ = read_entries(resolved)
 
-    session_id = next((entry["session_id"] for entry in entries if entry["type"] == "meta"), resolved.stem)
+    # Prefer session_id from the meta entry; fall back to first entry's session_id
+    # so a renamed file (no matching stem) doesn't silently drop all messages.
+    session_id = next(
+        (e["session_id"] for e in entries if e["type"] == "meta"),
+        next((e["session_id"] for e in entries), resolved.stem),
+    )
     entries = [entry for entry in entries if entry["session_id"] == session_id]
     session = Session(sink=sink, recorder=SessionRecorder.resume(path=resolved, session_id=session_id, entries=entries))
-    replayed_messages: list[tuple[int, Message]] = []
+    replayed_messages: list[tuple[int, dict[str, Any]]] = []
 
     for entry in entries:
         event_type = entry["type"]
         data = entry["data"]
 
         if event_type == "message":
-            restored = provider_message(data)
-            replayed_messages.append((entry["seq"], cast(Message, restored)))
+            # Keep raw data so _emit can access is_think / result_type / result_data.
+            replayed_messages.append((entry["seq"], data))
 
         elif event_type == "compact":
             replayed_messages = _apply_compact(replayed_messages, entry["seq"], data)
@@ -328,18 +370,20 @@ def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
             session.cached_tokens += int(data.get("cached_tokens", 0) or 0)
             session.reasoning_tokens += int(data.get("reasoning_tokens", 0) or 0)
 
-    for seq, message in replayed_messages:
-        session._history.append((message, seq))
-        message_data = cast(dict[str, Any], message)
-        role = message_data.get("role")
+    for seq, raw_data in replayed_messages:
+        # provider_message strips internal fields (is_think, result_type, etc.)
+        # so the LLM never sees them.
+        provider_msg = cast(Message, provider_message(raw_data))
+        session._history.append((provider_msg, seq))
+        role = raw_data.get("role")
 
         if role == "user":
             session.turns += 1
 
-        tool_calls = message_data.get("tool_calls")
+        tool_calls = raw_data.get("tool_calls")
         if role == "assistant" and isinstance(tool_calls, list):
             session.tool_calls += len(tool_calls)
 
-        _emit(session._sink, message)
+        _emit(session._sink, raw_data)
 
     return session

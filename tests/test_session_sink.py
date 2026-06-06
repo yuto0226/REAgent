@@ -240,7 +240,13 @@ def test_session_records_messages_and_usage_to_recorder():
                 }
             ],
         },
-        {"role": "tool", "tool_call_id": "call-1", "content": "out"},
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "out",
+            "result_type": "ShellResult",
+            "result_data": {"output": "out"},
+        },
     ]
     assert recorder.usages == [
         {
