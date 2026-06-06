@@ -58,6 +58,74 @@ def test_load_session_replays_messages_usage_and_attaches_recorder(tmp_path):
     assert all("id" not in message and "parent_id" not in message for message in loaded.messages)
 
 
+class RecordingSink:
+    def __init__(self):
+        self.calls: list = []
+
+    def on_assistant(self, text: str) -> None:
+        self.calls.append(("on_assistant", text))
+
+    def on_think(self, text: str) -> None:
+        self.calls.append(("on_think", text))
+
+    def on_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
+        self.calls.append(("on_tool_call", tool_call_id, name, args))
+
+    def on_tool_result(self, tool_call_id: str, result) -> None:
+        self.calls.append(("on_tool_result", tool_call_id, result.text))
+
+    def on_user(self, text: str) -> None:
+        self.calls.append(("on_user", text))
+
+    def on_status(self, msg: str) -> None:
+        self.calls.append(("on_status", msg))
+
+    def on_prompt(self, text: str) -> None:
+        self.calls.append(("on_prompt", text))
+
+    def on_thinking_start(self) -> None:
+        self.calls.append(("on_thinking_start",))
+
+    def on_thinking_update(self, phase: str, tokens: int) -> None:
+        self.calls.append(("on_thinking_update", phase, tokens))
+
+    def on_thinking_stop(self) -> None:
+        self.calls.append(("on_thinking_stop",))
+
+
+def test_load_session_reprints_visible_history_to_sink(tmp_path):
+    recorder_session = Session(
+        sink=SilentSink(),
+        recorder=SessionRecorder.create(root=tmp_path, cwd="/repo", model="model"),
+    )
+    recorder_session.add_user("hello")
+    recorder_session.add_assistant("hi")
+    recorder_session.add_tool_calls(
+        SimpleNamespace(
+            content=None,
+            tool_calls=[
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "shell", "arguments": {"cmd": "pwd"}},
+                }
+            ],
+        )
+    )
+    recorder_session.add_tool_result("call-1", ShellResult("out"))
+
+    sink = RecordingSink()
+    assert recorder_session._recorder is not None
+    load_session(recorder_session._recorder.path, sink=sink)
+
+    assert sink.calls == [
+        ("on_user", "hello"),
+        ("on_assistant", "hi"),
+        ("on_tool_call", "call-1", "shell", {"cmd": "pwd"}),
+        ("on_tool_result", "call-1", "out"),
+    ]
+
+
 def test_load_session_explicit_path_uses_embedded_session_id_when_file_is_renamed(tmp_path):
     recorder = SessionRecorder.create(root=tmp_path, cwd="/repo", model="model")
     recorder.record_message({"role": "user", "content": "hello"})

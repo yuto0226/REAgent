@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, TypedDict, cast
 
 from reagent.protocol import OutputSink, TerminalSink
-from reagent.results import ToolResult
+from reagent.results import ShellResult, ToolResult
 from reagent.session.recorder import SessionEntry, SessionRecorder, jsonable, read_entries, provider_message
 
 TOKEN_LIMIT = 60_000
@@ -241,6 +241,66 @@ def _apply_compact(
     return filtered
 
 
+def _parse_tool_call(tc: Any) -> tuple[str, str, dict[str, Any]] | None:
+    """Extract (id, name, args) from a provider tool_call dict, or None if malformed."""
+    if not isinstance(tc, dict):
+        return None
+
+    call_id = tc.get("id")
+    fn = tc.get("function")
+    if not isinstance(call_id, str) or not isinstance(fn, dict):
+        return None
+
+    name = fn.get("name")
+    raw = fn.get("arguments")
+    if not isinstance(name, str):
+        return None
+
+    # arguments may arrive as a JSON string or already-parsed dict
+    if isinstance(raw, str):
+        try:
+            args = json.loads(raw)
+        except json.JSONDecodeError:
+            args = {}
+    elif isinstance(raw, dict):
+        args = raw
+    else:
+        args = {}
+
+    return call_id, name, args
+
+
+def _emit(sink: OutputSink, msg: Message) -> None:
+    """Forward one provider message to the sink (user / assistant / tool roles only)."""
+    m = cast(dict[str, Any], msg)
+    role = m.get("role")
+
+    if role == "user":
+        content = m.get("content")
+        if isinstance(content, str):
+            sink.on_user(content)
+        return
+
+    if role == "assistant":
+        content = m.get("content")
+        if isinstance(content, str) and content:
+            sink.on_assistant(content)
+
+        tool_calls = m.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                parsed = _parse_tool_call(tc)
+                if parsed is not None:
+                    sink.on_tool_call(*parsed)
+        return
+
+    if role == "tool":
+        call_id = m.get("tool_call_id")
+        content = m.get("content")
+        if isinstance(call_id, str) and isinstance(content, str):
+            sink.on_tool_result(call_id, ShellResult(content))
+
+
 def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
     resolved = Path(path).expanduser()
     entries, _ = read_entries(resolved)
@@ -279,5 +339,7 @@ def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
         tool_calls = message_data.get("tool_calls")
         if role == "assistant" and isinstance(tool_calls, list):
             session.tool_calls += len(tool_calls)
+
+        _emit(session._sink, message)
 
     return session
