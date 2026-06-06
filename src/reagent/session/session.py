@@ -8,7 +8,7 @@ from typing import Any, Literal, Protocol, TypedDict, cast
 
 from reagent.protocol import OutputSink, TerminalSink
 from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, ToolResult
-from reagent.session.recorder import SessionEntry, SessionRecorder, jsonable, read_entries, provider_message
+from reagent.session.recorder import SessionEntry, SessionRecorder, jsonable, read_entries, to_provider_message
 
 TOKEN_LIMIT = 60_000
 
@@ -269,39 +269,39 @@ def _reconstruct_result(result_type: str, content: str, result_data: Any) -> Too
     return ShellResult(content)
 
 
-def _parse_tool_call(tc: Any) -> tuple[str, str, dict[str, Any]] | None:
+def _parse_tool_call(tool_call: Any) -> tuple[str, str, dict[str, Any]] | None:
     """Extract (id, name, args) from a provider tool_call dict, or None if malformed."""
-    if not isinstance(tc, dict):
+    if not isinstance(tool_call, dict):
         return None
 
-    call_id = tc.get("id")
-    fn = tc.get("function")
-    if not isinstance(call_id, str) or not isinstance(fn, dict):
+    call_id = tool_call.get("id")
+    function = tool_call.get("function")
+    if not isinstance(call_id, str) or not isinstance(function, dict):
         return None
 
-    name = fn.get("name")
-    raw = fn.get("arguments")
+    name = function.get("name")
+    raw_args = function.get("arguments")
     if not isinstance(name, str):
         return None
 
     # arguments may arrive as a JSON string or already-parsed dict
-    if isinstance(raw, str):
+    if isinstance(raw_args, str):
         try:
-            args = json.loads(raw)
+            args = json.loads(raw_args)
             if not isinstance(args, dict):
                 args = {}
         except json.JSONDecodeError:
             args = {}
-    elif isinstance(raw, dict):
-        args = raw
+    elif isinstance(raw_args, dict):
+        args = raw_args
     else:
         args = {}
 
     return call_id, name, args
 
 
-def _emit(sink: OutputSink, data: dict[str, Any]) -> None:
-    """Forward one raw JSONL message entry to the sink."""
+def replay_sink(sink: OutputSink, data: dict[str, Any]) -> None:
+    """Replay one stored JSONL message to the UI sink."""
     role = data.get("role")
 
     if role == "user":
@@ -320,8 +320,8 @@ def _emit(sink: OutputSink, data: dict[str, Any]) -> None:
 
         tool_calls = data.get("tool_calls")
         if isinstance(tool_calls, list):
-            for tc in tool_calls:
-                parsed = _parse_tool_call(tc)
+            for tool_call in tool_calls:
+                parsed = _parse_tool_call(tool_call)
                 if parsed is not None:
                     sink.on_tool_call(*parsed)
         return
@@ -357,7 +357,7 @@ def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
         data = entry["data"]
 
         if event_type == "message":
-            # Keep raw data so _emit can access is_think / result_type / result_data.
+            # Keep raw data so replay_sink can access is_think / result_type / result_data.
             replayed_messages.append((entry["seq"], data))
 
         elif event_type == "compact":
@@ -371,9 +371,9 @@ def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
             session.reasoning_tokens += int(data.get("reasoning_tokens", 0) or 0)
 
     for seq, raw_data in replayed_messages:
-        # provider_message strips internal fields (is_think, result_type, etc.)
+        # to_provider_message strips internal fields (is_think, result_type, etc.)
         # so the LLM never sees them.
-        provider_msg = cast(Message, provider_message(raw_data))
+        provider_msg = cast(Message, to_provider_message(raw_data))
         session._history.append((provider_msg, seq))
         role = raw_data.get("role")
 
@@ -384,6 +384,6 @@ def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
         if role == "assistant" and isinstance(tool_calls, list):
             session.tool_calls += len(tool_calls)
 
-        _emit(session._sink, raw_data)
+        replay_sink(session._sink, raw_data)
 
     return session

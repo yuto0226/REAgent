@@ -4,20 +4,20 @@ import asyncio
 import pytest
 
 import reagent.session.turn as turn
-from reagent.session.turn import provider_messages, run_turn
+from reagent.session.turn import to_provider_messages, run_turn
 
 
 def test_run_turn_is_coroutine():
     assert inspect.iscoroutinefunction(run_turn)
 
 
-def test_provider_messages_strips_local_ids():
+def test_to_provider_messages_strips_local_ids():
     messages = (
         {"role": "user", "content": "hello", "id": "m1", "parent_id": None},
         {"role": "assistant", "content": "hi", "id": "m2", "parent_id": "m1"},
     )
 
-    assert provider_messages(messages) == [
+    assert to_provider_messages(messages) == [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
     ]
