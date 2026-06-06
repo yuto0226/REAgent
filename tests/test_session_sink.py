@@ -1,12 +1,38 @@
 # tests/test_session_sink.py
+from pathlib import Path
+from typing import Any, Mapping, cast
+
 from reagent.protocol import SilentSink
 from reagent.results import ErrorResult, ShellResult
 from reagent.session import Session
+from reagent.session.recorder import SessionEntry
 
 
 class Obj:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
+
+class FakeRecorder:
+    def __init__(self):
+        self.path = Path("session.jsonl")
+        self.messages = []
+        self.usages = []
+        self._seq = 0
+
+    def record_message(self, message: Mapping[str, Any]) -> SessionEntry:
+        self.messages.append(message)
+        seq = self._seq
+        self._seq += 1
+        return cast(SessionEntry, {"seq": seq})
+
+    def record_usage(self, **usage: Any) -> None:
+        self.usages.append(usage)
+
+    def record_compact(self, *, start_seq: int, end_seq: int, replacement_message: dict[str, Any]) -> SessionEntry:
+        seq = self._seq
+        self._seq += 1
+        return cast(SessionEntry, {"seq": seq})
 
 
 class RecordingSink:
@@ -170,3 +196,57 @@ def test_record_usage_tracks_cached_and_reasoning_tokens():
     assert s.completion_tokens == 5
     assert s.cached_tokens == 3
     assert s.reasoning_tokens == 2
+
+
+def test_session_records_messages_and_usage_to_recorder():
+    recorder = FakeRecorder()
+    s = Session(sink=SilentSink(), recorder=recorder)
+
+    s.add_user("hello")
+    s.add_assistant("hi")
+    s.add_tool_calls(
+        Obj(
+            content=None,
+            tool_calls=[
+                Obj(
+                    id="call-1",
+                    type="function",
+                    function=Obj(name="shell", arguments='{"cmd":"pwd"}'),
+                )
+            ],
+        )
+    )
+    s.add_tool_result("call-1", ShellResult("out"))
+    s.record_usage(
+        Obj(
+            prompt_tokens=10,
+            completion_tokens=5,
+            prompt_tokens_details=Obj(cached_tokens=3),
+            completion_tokens_details=Obj(reasoning_tokens=2),
+        )
+    )
+
+    assert recorder.messages == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "shell", "arguments": '{"cmd":"pwd"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "out"},
+    ]
+    assert recorder.usages == [
+        {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cached_tokens": 3,
+            "reasoning_tokens": 2,
+        }
+    ]

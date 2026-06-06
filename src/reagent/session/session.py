@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import bisect
 import json
-from collections.abc import Callable
-from typing import Any, Literal, TypedDict
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any, Literal, Protocol, TypedDict, cast
 
 from reagent.protocol import OutputSink, TerminalSink
 from reagent.results import ToolResult
+from reagent.session.recorder import SessionEntry, SessionRecorder, jsonable, read_entries, provider_message
 
 TOKEN_LIMIT = 60_000
 
@@ -35,6 +38,23 @@ class ToolMessage(TypedDict):
 Message = UserMessage | AssistantMessage | AssistantToolCallMessage | ToolMessage
 
 
+class Recorder(Protocol):
+    path: Path
+
+    def record_message(self, message: Mapping[str, Any]) -> SessionEntry: ...
+
+    def record_usage(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int,
+        reasoning_tokens: int,
+    ) -> None: ...
+
+    def record_compact(self, *, start_seq: int, end_seq: int, replacement_message: dict[str, Any]) -> SessionEntry: ...
+
+
 def _usage_detail(usage: Any, details_name: str, token_name: str) -> int:
     details = getattr(usage, details_name, None)
     if details is None:
@@ -45,9 +65,12 @@ def _usage_detail(usage: Any, details_name: str, token_name: str) -> int:
 
 
 class Session:
-    def __init__(self, sink: OutputSink | None = None) -> None:
+    def __init__(self, sink: OutputSink | None = None, recorder: Recorder | None = None) -> None:
         self._sink: OutputSink = sink if sink is not None else TerminalSink()
-        self._history: list[Message] = []
+        self._recorder = recorder
+        # Each entry is (message, jsonl_seq). seq is None when the message has no
+        # independent JSONL record (e.g. a compact replacement injected during load).
+        self._history: list[tuple[Message, int | None]] = []
         self.llm_calls = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
@@ -62,34 +85,44 @@ class Session:
 
     @property
     def messages(self) -> tuple[Message, ...]:
-        return tuple(self._history)
+        return tuple(m for m, _ in self._history)
+
+    def _log(self, message: Message) -> int | None:
+        if self._recorder is None:
+            return None
+        return self._recorder.record_message(message)["seq"]
+
+    def _append(self, message: Message) -> None:
+        self._history.append((message, self._log(message)))
 
     def add_user(self, content: str) -> None:
-        self._history.append(UserMessage(role="user", content=content))
+        self._append(UserMessage(role="user", content=content))
         self.turns += 1
 
     def add_assistant(self, content: str) -> None:
-        self._history.append(AssistantMessage(role="assistant", content=content))
+        message = AssistantMessage(role="assistant", content=content)
+        self._append(message)
         if content:
             self._sink.on_assistant(content)
 
     def add_think(self, content: str) -> None:
-        self._history.append(AssistantMessage(role="assistant", content=content))
+        message = AssistantMessage(role="assistant", content=content)
+        self._append(message)
         if content:
             self._sink.on_think(content)
 
     def add_tool_calls(self, raw_message: Any) -> None:
-        self._history.append(
-            AssistantToolCallMessage(
-                role="assistant",
-                content=raw_message.content,
-                tool_calls=raw_message.tool_calls,
-            )
+        message = AssistantToolCallMessage(
+            role="assistant",
+            content=raw_message.content,
+            tool_calls=jsonable(raw_message.tool_calls or []),
         )
+        self._append(message)
         self.tool_calls += len(raw_message.tool_calls or [])
 
     def add_tool_result(self, tool_call_id: str, result: ToolResult) -> None:
-        self._history.append(ToolMessage(role="tool", tool_call_id=tool_call_id, content=result.text))
+        message = ToolMessage(role="tool", tool_call_id=tool_call_id, content=result.text)
+        self._append(message)
         self._sink.on_tool_result(tool_call_id, result)
 
     def emit_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
@@ -116,14 +149,29 @@ class Session:
     def record_usage(self, usage: Any) -> None:
         if usage is None:
             return
+
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        cached_tokens = _usage_detail(usage, "prompt_tokens_details", "cached_tokens")
+        reasoning_tokens = _usage_detail(usage, "completion_tokens_details", "reasoning_tokens")
+
         self.llm_calls += 1
-        self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-        self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
-        self.cached_tokens += _usage_detail(usage, "prompt_tokens_details", "cached_tokens")
-        self.reasoning_tokens += _usage_detail(usage, "completion_tokens_details", "reasoning_tokens")
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.cached_tokens += cached_tokens
+        self.reasoning_tokens += reasoning_tokens
+
+        if self._recorder is not None:
+            self._recorder.record_usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
+                reasoning_tokens=reasoning_tokens,
+            )
 
     def _estimate_tokens(self) -> int:
-        return len(json.dumps(list(self._history), default=str)) // 4
+        # ~4 chars per token; rough estimate, not precise.
+        return len(json.dumps([m for m, _ in self._history], default=str)) // 4
 
     def compact(self, completion_fn: Callable[[list[Message]], str]) -> None:
         tokens = self._estimate_tokens()
@@ -131,24 +179,105 @@ class Session:
             return
 
         self.emit_status(f"[!] compacting ... ({tokens})\n")
-        turn_starts = [i for i, m in enumerate(self._history) if m["role"] == "user"]
+        turn_starts = [i for i, (m, _) in enumerate(self._history) if m["role"] == "user"]
+
         if len(turn_starts) < 2:
             self.truncate()
             return
 
         compact_end = turn_starts[-1]
-        to_compact = list(self._history[1:compact_end])
+        # _history[0] is the seed user message; preserve it and the latest turn.
+        to_compact = [m for m, _ in self._history[1:compact_end]]
+        compacted_seqs = [seq for _, seq in self._history[1:compact_end] if seq is not None]
+
         try:
             summary = completion_fn(to_compact)
-            self._history[1:compact_end] = [UserMessage(role="user", content=f"[Context summary: {summary}]")]
         except Exception:
             self.truncate()
+            return
+
+        replacement = UserMessage(role="user", content=f"[Context summary: {summary}]")
+        self._history[1:compact_end] = [(replacement, None)]
+
+        if self._recorder is not None and compacted_seqs:
+            entry = self._recorder.record_compact(
+                start_seq=min(compacted_seqs),
+                end_seq=max(compacted_seqs),
+                replacement_message=dict(replacement),
+            )
+            # Store the compact entry's own seq so a subsequent compact can
+            # identify and replace this summary by seq range during replay.
+            self._history[1] = (replacement, entry["seq"])
 
     def truncate(self) -> None:
         # Drop oldest turns (from index 1) until history fits within TOKEN_LIMIT.
         # Each turn spans from a UserMessage to just before the next UserMessage.
         while self._estimate_tokens() > TOKEN_LIMIT and len(self._history) > 1:
             end = 2
-            while end < len(self._history) and self._history[end]["role"] != "user":
+            while end < len(self._history) and self._history[end][0]["role"] != "user":
                 end += 1
             del self._history[1:end]
+
+
+def _apply_compact(
+    replayed: list[tuple[int, Message]],
+    entry_seq: int,
+    data: dict[str, Any],
+) -> list[tuple[int, Message]]:
+    start_seq = data.get("start_seq")
+    end_seq = data.get("end_seq")
+    replacement = data.get("replacement_message")
+
+    if not (isinstance(start_seq, int) and isinstance(end_seq, int) and isinstance(replacement, dict)):
+        return replayed
+
+    filtered = [(s, m) for s, m in replayed if not start_seq <= s <= end_seq]
+    restored = cast(Message, provider_message(replacement))
+
+    insert_at = bisect.bisect_left([s for s, _ in filtered], start_seq)
+    # Use entry_seq (the compact entry's own seq) so a subsequent compact can
+    # identify and replace this summary by seq range during replay.
+    filtered.insert(insert_at, (entry_seq, restored))
+    return filtered
+
+
+def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
+    resolved = Path(path).expanduser()
+    entries, _ = read_entries(resolved)
+
+    session_id = next((entry["session_id"] for entry in entries if entry["type"] == "meta"), resolved.stem)
+    entries = [entry for entry in entries if entry["session_id"] == session_id]
+    session = Session(sink=sink, recorder=SessionRecorder.resume(path=resolved, session_id=session_id, entries=entries))
+    replayed_messages: list[tuple[int, Message]] = []
+
+    for entry in entries:
+        event_type = entry["type"]
+        data = entry["data"]
+
+        if event_type == "message":
+            restored = provider_message(data)
+            replayed_messages.append((entry["seq"], cast(Message, restored)))
+
+        elif event_type == "compact":
+            replayed_messages = _apply_compact(replayed_messages, entry["seq"], data)
+
+        elif event_type == "usage":
+            session.llm_calls += 1
+            session.prompt_tokens += int(data.get("prompt_tokens", 0) or 0)
+            session.completion_tokens += int(data.get("completion_tokens", 0) or 0)
+            session.cached_tokens += int(data.get("cached_tokens", 0) or 0)
+            session.reasoning_tokens += int(data.get("reasoning_tokens", 0) or 0)
+
+    for seq, message in replayed_messages:
+        session._history.append((message, seq))
+        message_data = cast(dict[str, Any], message)
+        role = message_data.get("role")
+
+        if role == "user":
+            session.turns += 1
+
+        tool_calls = message_data.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list):
+            session.tool_calls += len(tool_calls)
+
+    return session
