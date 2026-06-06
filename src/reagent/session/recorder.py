@@ -39,8 +39,11 @@ def _data_root() -> Path:
     return Path(os.environ.get("REAGENT_HOME", "~/.reagent")).expanduser()
 
 
+_INTERNAL_FIELDS = frozenset({"id", "parent_id", "is_think", "result_type", "result_data"})
+
+
 def provider_message(message: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in message.items() if key not in {"id", "parent_id"}}
+    return {key: value for key, value in message.items() if key not in _INTERNAL_FIELDS}
 
 
 def jsonable(value: Any) -> Any:
@@ -63,7 +66,7 @@ def read_entries(path: str | os.PathLike[str], session_id: str | None = None) ->
     entries: list[SessionEntry] = []
     skipped = 0
 
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
@@ -103,7 +106,7 @@ def find_file(value: str | os.PathLike[str], root: str | os.PathLike[str] | None
     try:
         uuid.UUID(session_id)
     except ValueError as exc:
-        raise FileNotFoundError(f"session file not found: {value}") from exc
+        raise ValueError(f"not a valid session path or UUID: {value}") from exc
 
     data_root = Path(root).expanduser() if root is not None else _data_root()
     matches = sorted((data_root / "sessions").glob(f"**/{session_id}.jsonl"))
