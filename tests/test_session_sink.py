@@ -5,7 +5,7 @@ from typing import Any, Mapping, cast
 from reagent.protocol import SilentSink
 from reagent.results import ErrorResult, ShellResult
 from reagent.session import Session
-from reagent.session.recorder import SessionEntry
+from reagent.session.recorder import SessionEntry, SessionRecorder
 
 
 class Obj:
@@ -200,7 +200,7 @@ def test_record_usage_tracks_cached_and_reasoning_tokens():
 
 def test_session_records_messages_and_usage_to_recorder():
     recorder = FakeRecorder()
-    s = Session(sink=SilentSink(), recorder=recorder)
+    s = Session(sink=SilentSink(), recorder=cast(SessionRecorder, recorder))
 
     s.add_user("hello")
     s.add_assistant("hi")

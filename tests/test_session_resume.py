@@ -241,7 +241,7 @@ class FailingCompactRecorder:
 
 def test_compact_propagates_recorder_failures(monkeypatch):
     monkeypatch.setattr(session_module, "TOKEN_LIMIT", 1)
-    session = Session(sink=SilentSink(), recorder=FailingCompactRecorder())
+    session = Session(sink=SilentSink(), recorder=cast(SessionRecorder, FailingCompactRecorder()))
     session.add_user("keep")
     session.add_user("old")
     session.add_assistant("old response")
