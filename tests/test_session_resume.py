@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any, Mapping, cast
 
 from reagent.protocol import SilentSink
-from reagent.results import ShellResult
+from reagent.results import ReadResult, ShellResult
 import reagent.session.session as session_module
 from reagent.session import Session, load_session
 from reagent.session.recorder import SessionEntry, SessionRecorder, provider_message
@@ -135,6 +135,44 @@ def test_load_session_explicit_path_uses_embedded_session_id_when_file_is_rename
     loaded = load_session(renamed, sink=SilentSink())
 
     assert loaded.messages == ({"role": "user", "content": "hello"},)
+
+
+def test_load_session_replays_think_via_on_think(tmp_path):
+    recorder_session = Session(
+        sink=SilentSink(),
+        recorder=SessionRecorder.create(root=tmp_path, cwd="/repo", model="model"),
+    )
+    recorder_session.add_user("question")
+    recorder_session.add_think("reasoning")
+    recorder_session.add_assistant("answer")
+
+    sink = RecordingSink()
+    assert recorder_session._recorder is not None
+    load_session(recorder_session._recorder.path, sink=sink)
+
+    assert sink.calls == [
+        ("on_user", "question"),
+        ("on_think", "reasoning"),
+        ("on_assistant", "answer"),
+    ]
+
+
+def test_load_session_reconstructs_read_result(tmp_path):
+    recorder_session = Session(
+        sink=SilentSink(),
+        recorder=SessionRecorder.create(root=tmp_path, cwd="/repo", model="model"),
+    )
+    recorder_session.add_user("read")
+    recorder_session.add_tool_result("call-r", ReadResult(path="/file.py", content="x = 1"))
+
+    sink = RecordingSink()
+    assert recorder_session._recorder is not None
+    load_session(recorder_session._recorder.path, sink=sink)
+
+    on_tool_result_call = next(c for c in sink.calls if c[0] == "on_tool_result")
+    assert on_tool_result_call[1] == "call-r"
+    # result.text should match the original ReadResult rendering (numbered lines)
+    assert "1: x = 1" in on_tool_result_call[2]
 
 
 def test_load_session_applies_compact_entries(tmp_path, monkeypatch):
