@@ -116,4 +116,4 @@ class MCPManager:
             return ErrorResult(f"Error: MCP tool {name!r} timed out after {entry.spec.call_timeout}s")
         except Exception as exc:
             return ErrorResult(f"Error: {exc}")
-        return MCPResult.from_call(name, result)
+        return MCPResult(name=name, content=result.model_dump_json())

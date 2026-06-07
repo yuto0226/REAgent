@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from reagent.mcp.client import MCPManager, _Entry
@@ -9,17 +10,20 @@ from reagent.results import ErrorResult, MCPResult
 
 
 class _Block:
-    def __init__(self, type: str, text: str = "", mimeType: str = "") -> None:
+    def __init__(self, type: str, text: str = "") -> None:
         self.type = type
         self.text = text
-        self.mimeType = mimeType
 
 
 class _CallResult:
-    def __init__(self, content: list[Any], isError: bool = False, structuredContent: Any = None) -> None:
+    def __init__(self, content: list[Any], isError: bool = False) -> None:
         self.content = content
         self.isError = isError
-        self.structuredContent = structuredContent
+
+    def model_dump_json(self) -> str:
+        return json.dumps(
+            {"content": [{"type": b.type, "text": b.text} for b in self.content], "isError": self.isError}
+        )
 
 
 class _StubSession:
@@ -63,30 +67,6 @@ def test_allowlist_filters_tools():
     assert not spec.allows("delete_database")
 
 
-def test_from_call_flattens_text_blocks():
-    out = MCPResult.from_call("ida__decompile", _CallResult([_Block("text", "a"), _Block("text", "b")]))
-    assert isinstance(out, MCPResult)
-    assert out.text == "a\nb"
-
-
-def test_from_call_marks_non_text_blocks():
-    out = MCPResult.from_call("t", _CallResult([_Block("image", mimeType="image/png")]))
-    assert isinstance(out, MCPResult)
-    assert "image" in out.text.lower()
-
-
-def test_from_call_empty_content_reads_as_no_content():
-    out = MCPResult.from_call("t", _CallResult([]))
-    assert isinstance(out, MCPResult)
-    assert out.text == "(no content)"
-
-
-def test_from_call_iserror_maps_to_error_result():
-    out = MCPResult.from_call("t", _CallResult([_Block("text", "kaboom")], isError=True))
-    assert isinstance(out, ErrorResult)
-    assert "kaboom" in out.text
-
-
 def test_schemas_emit_openai_function_shape():
     m = _manager_with(
         _StubSession(),
@@ -107,13 +87,21 @@ def test_has_and_tool_names():
     assert m.tool_names == ["ida__decompile"]
 
 
-async def test_call_success_returns_mcpresult():
+async def test_call_returns_raw_json_mcpresult():
     session = _StubSession(result=_CallResult([_Block("text", "int main() {}")]))
-    m = _manager_with(session)
-    out = await m.call("ida__decompile", {"address": "0x401000"})
+    out = await _manager_with(session).call("ida__decompile", {"address": "0x401000"})
     assert isinstance(out, MCPResult)
-    assert "int main" in out.text
+    assert "int main() {}" in out.text
+    assert '"content"' in out.text
     assert session.calls == [("decompile", {"address": "0x401000"})]
+
+
+async def test_call_server_error_passed_through_as_json():
+    session = _StubSession(result=_CallResult([_Block("text", "boom")], isError=True))
+    out = await _manager_with(session).call("ida__decompile", {})
+    assert isinstance(out, MCPResult)
+    assert "boom" in out.text
+    assert "isError" in out.text
 
 
 async def test_call_unknown_tool_returns_error():
@@ -134,10 +122,3 @@ async def test_call_client_exception_maps_to_error():
     out = await _manager_with(session).call("ida__decompile", {})
     assert isinstance(out, ErrorResult)
     assert "disconnected" in out.text
-
-
-async def test_call_server_iserror_maps_to_error():
-    session = _StubSession(result=_CallResult([_Block("text", "boom")], isError=True))
-    out = await _manager_with(session).call("ida__decompile", {})
-    assert isinstance(out, ErrorResult)
-    assert "boom" in out.text
