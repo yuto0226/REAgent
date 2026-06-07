@@ -50,7 +50,6 @@ class ErrorResult:
 
 @dataclass
 class MCPResult:
-    name: str
     content: str
 
     @property
