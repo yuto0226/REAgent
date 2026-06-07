@@ -48,4 +48,36 @@ class ErrorResult:
         return self.message
 
 
-ToolResult: TypeAlias = ShellResult | ReadResult | DiffResult | ErrorResult
+@dataclass
+class MCPResult:
+    name: str
+    content: str
+    structured: dict | None = None
+
+    @property
+    def text(self) -> str:
+        return self.content or "(no content)"
+
+    @classmethod
+    def from_call(cls, name: str, result: object) -> ToolResult:
+        parts: list[str] = []
+        for block in getattr(result, "content", None) or []:
+            kind = getattr(block, "type", None)
+            if kind == "text":
+                parts.append(getattr(block, "text", "") or "")
+            elif kind == "image":
+                parts.append(f"[image: {getattr(block, 'mimeType', 'image')}]")
+            elif kind == "audio":
+                parts.append(f"[audio: {getattr(block, 'mimeType', 'audio')}]")
+            elif kind == "resource":
+                parts.append("[embedded resource]")
+            else:
+                parts.append(str(block))
+        text = "\n".join(p for p in parts if p)
+
+        if getattr(result, "isError", False):
+            return ErrorResult(text or f"Error: MCP tool {name!r} reported an error")
+        return cls(name=name, content=text, structured=getattr(result, "structuredContent", None))
+
+
+ToolResult: TypeAlias = ShellResult | ReadResult | DiffResult | ErrorResult | MCPResult
