@@ -104,3 +104,47 @@ def test_dispatch_status_reports_session_counters_without_history_change():
         "Turns: 1\nLLM calls: 2\nTool calls: 3\nTokens: total=1,250 input=1,000 output=250 cached=75 reasoning=30"
     )
     assert session.messages == before
+
+
+def test_dispatch_compact_forces_session_compaction():
+    session = Session(sink=SilentSink())
+    session.add_user("keep")
+    session.add_user("old")
+    session.add_assistant("old response")
+    session.add_user("latest")
+
+    result = dispatch("/compact", session, compact_fn=lambda messages: "manual summary")
+
+    assert result.outcome == "handled"
+    assert result.message == "Context compacted"
+    assert list(session.messages) == [
+        {"role": "user", "content": "keep"},
+        {"role": "user", "content": "[Context summary: manual summary]"},
+        {"role": "user", "content": "latest"},
+    ]
+
+
+def test_dispatch_compact_reports_nothing_to_compact():
+    session = Session(sink=SilentSink())
+    session.add_user("only")
+    before = session.messages
+
+    result = dispatch("/compact", session, compact_fn=lambda messages: "manual summary")
+
+    assert result.outcome == "handled"
+    assert result.message == "Nothing to compact yet"
+    assert session.messages == before
+
+
+def test_dispatch_compact_surfaces_persistence_failure(monkeypatch):
+    session = Session(sink=SilentSink())
+
+    def fail_compact(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(session, "compact", fail_compact)
+
+    result = dispatch("/compact", session, compact_fn=lambda messages: "manual summary")
+
+    assert result.outcome == "handled"
+    assert result.message == "Compact failed: disk full"
