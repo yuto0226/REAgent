@@ -25,6 +25,17 @@ from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, To
 SPINNER_FRAMES = "☰☱☲☳☴☵☶☷"
 _SPINNER_MS = 80
 
+# Strips ANSI/VT escape sequences so raw terminal output (gdb, vim, curses apps)
+# cannot corrupt the rendering terminal when replayed or displayed as tool output.
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))"
+    r"|\x0e|\x0f"  # SO / SI character-set shifts
+)
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
+
 
 def _fmt_elapsed(elapsed: float) -> str:
     if elapsed >= 60:
@@ -140,9 +151,9 @@ class RichRenderer:
         del tool_call_id
         match result:
             case ErrorResult(message=msg):
-                self._print_tree(self._clip_lines(msg), style="reagent.error")
+                self._print_tree(self._clip_lines(_strip_ansi(msg)), style="reagent.error")
             case ShellResult(output=output):
-                self._print_tree(self._clip_lines(output), style="reagent.guide")
+                self._print_tree(self._clip_lines(_strip_ansi(output)), style="reagent.guide")
             case ReadResult(content=content, path=path, start_line=start_line):
                 if content:
                     n = len(content.splitlines())
