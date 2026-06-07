@@ -26,10 +26,13 @@ class FakeRecorder:
         self._seq += 1
         return cast(SessionEntry, {"seq": seq})
 
+    def record_summary(self, message: Mapping[str, Any]) -> SessionEntry:
+        return self.record_message({**message, "is_summary": True})
+
     def record_usage(self, **usage: Any) -> None:
         self.usages.append(usage)
 
-    def record_compact(self, *, start_seq: int, end_seq: int, replacement_message: dict[str, Any]) -> SessionEntry:
+    def record_compact(self, *, tail_start_seq: int, summary_seq: int) -> SessionEntry:
         seq = self._seq
         self._seq += 1
         return cast(SessionEntry, {"seq": seq})
