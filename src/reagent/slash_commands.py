@@ -10,7 +10,6 @@ if TYPE_CHECKING:
 
 SlashAction = Literal["local", "prompt"]
 SlashOrigin = Literal["builtin"]
-SlashAvailability = Literal["idle", "running", "any"]
 SlashOutcome = Literal["not_slash", "unknown", "exit", "handled", "submit_prompt"]
 
 
@@ -25,7 +24,6 @@ class SlashCommand:
     origin: SlashOrigin
     accepts_args: bool = False
     arg_hint: str = ""
-    available: SlashAvailability = "idle"
     visible: bool = True
     template: str | None = None
 
@@ -62,35 +60,38 @@ def parse(text: str) -> ParsedSlash | None:
     return ParsedSlash(name=name, args=args)
 
 
+_BUILTINS: tuple[SlashCommand, ...] = (
+    SlashCommand(
+        name="exit",
+        aliases=("quit",),
+        description="Exit the REPL",
+        action="local",
+        origin="builtin",
+    ),
+    SlashCommand(
+        name="status",
+        aliases=(),
+        description="Show local session stats",
+        action="local",
+        origin="builtin",
+    ),
+    SlashCommand(
+        name="compact",
+        aliases=(),
+        description="Compact the current session context",
+        action="local",
+        origin="builtin",
+    ),
+)
+
+
 def builtins() -> tuple[SlashCommand, ...]:
-    return (
-        SlashCommand(
-            name="exit",
-            aliases=("quit",),
-            description="Exit the REPL",
-            action="local",
-            origin="builtin",
-        ),
-        SlashCommand(
-            name="status",
-            aliases=(),
-            description="Show local session stats",
-            action="local",
-            origin="builtin",
-        ),
-        SlashCommand(
-            name="compact",
-            aliases=(),
-            description="Compact the current session context",
-            action="local",
-            origin="builtin",
-        ),
-    )
+    return _BUILTINS
 
 
 def find(name: str) -> SlashCommand | None:
     normalized = name.lower()
-    for command in builtins():
+    for command in _BUILTINS:
         if normalized == command.name or normalized in command.aliases:
             return command
     return None

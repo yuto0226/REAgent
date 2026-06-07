@@ -45,7 +45,6 @@ def test_builtin_metadata_reserves_extension_fields():
         origin="builtin",
         accepts_args=False,
         arg_hint="",
-        available="idle",
         visible=True,
         template=None,
     )
