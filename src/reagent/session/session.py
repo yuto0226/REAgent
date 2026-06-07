@@ -69,13 +69,13 @@ class Session:
     def messages(self) -> tuple[Message, ...]:
         return tuple(m for m, _ in self._history)
 
-    def _log(self, message: Message) -> int | None:
+    def _log(self, message: Message, **extra: Any) -> int | None:
         if self._recorder is None:
             return None
-        return self._recorder.record_message(message)["seq"]
+        return self._recorder.record_message({**message, **extra})["seq"]
 
-    def _append(self, message: Message) -> None:
-        self._history.append((message, self._log(message)))
+    def _append(self, message: Message, **extra: Any) -> None:
+        self._history.append((message, self._log(message, **extra)))
 
     def add_user(self, content: str) -> None:
         self._append(UserMessage(role="user", content=content))
@@ -89,10 +89,7 @@ class Session:
 
     def add_think(self, content: str) -> None:
         message = AssistantMessage(role="assistant", content=content)
-        seq: int | None = None
-        if self._recorder is not None:
-            seq = self._recorder.record_message({**message, "is_think": True})["seq"]
-        self._history.append((message, seq))
+        self._append(message, is_think=True)
         if content:
             self._sink.on_think(content)
 
@@ -107,12 +104,7 @@ class Session:
 
     def add_tool_result(self, tool_call_id: str, result: ToolResult) -> None:
         message = ToolMessage(role="tool", tool_call_id=tool_call_id, content=result.text)
-        seq: int | None = None
-        if self._recorder is not None:
-            extra = {"result_type": type(result).__name__, "result_data": jsonable(vars(result))}
-            seq = self._recorder.record_message({**message, **extra})["seq"]
-
-        self._history.append((message, seq))
+        self._append(message, result_type=type(result).__name__, result_data=jsonable(vars(result)))
         self._sink.on_tool_result(tool_call_id, result)
 
     def emit_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
