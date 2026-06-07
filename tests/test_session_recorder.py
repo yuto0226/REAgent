@@ -68,11 +68,7 @@ def test_recorder_writes_message_usage_and_compact_entries(tmp_path, monkeypatch
         cached_tokens=3,
         reasoning_tokens=2,
     )
-    recorder.record_compact(
-        start_seq=1,
-        end_seq=2,
-        replacement_message={"role": "user", "content": "[Context summary: kept]"},
-    )
+    recorder.record_compact(tail_start_seq=2, summary_seq=3)
 
     entries = read_jsonl(recorder.path)
     assert [entry["seq"] for entry in entries] == [0, 1, 2, 3]
@@ -85,8 +81,10 @@ def test_recorder_writes_message_usage_and_compact_entries(tmp_path, monkeypatch
         "cached_tokens": 3,
         "reasoning_tokens": 2,
     }
-    assert entries[3]["data"]["start_seq"] == 1
-    assert entries[3]["data"]["replacement_message"]["content"] == "[Context summary: kept]"
+    assert entries[3]["data"]["tail_start_seq"] == 2
+    assert entries[3]["data"]["summary_seq"] == 3
+    assert "start_seq" not in entries[3]["data"]
+    assert "end_seq" not in entries[3]["data"]
 
 
 def test_recorder_generates_message_id_and_parent_chain(tmp_path):
@@ -182,7 +180,7 @@ def test_read_entries_skips_json_entries_with_missing_required_fields(tmp_path):
 
 
 def test_to_provider_message_strips_local_ids_without_mutating_original():
-    message = {"role": "assistant", "content": "ok", "id": "local", "parent_id": "parent"}
+    message = {"role": "assistant", "content": "ok", "id": "local", "parent_id": "parent", "is_summary": True}
 
     sanitized = to_provider_message(message)
 

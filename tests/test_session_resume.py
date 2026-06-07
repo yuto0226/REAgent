@@ -8,7 +8,7 @@ from reagent.protocol import SilentSink
 from reagent.results import ReadResult, ShellResult
 import reagent.session.session as session_module
 from reagent.session import Session, load_session
-from reagent.session.recorder import SessionEntry, SessionRecorder, to_provider_message
+from reagent.session.recorder import SessionEntry, SessionRecorder, read_entries, to_provider_message
 
 
 def test_load_session_replays_messages_usage_and_attaches_recorder(tmp_path):
@@ -198,6 +198,56 @@ def test_load_session_applies_compact_entries(tmp_path, monkeypatch):
     ]
 
 
+def test_compact_writes_summary_as_message_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_module, "TOKEN_LIMIT", 1)
+    recorder_session = Session(
+        sink=SilentSink(),
+        recorder=SessionRecorder.create(root=tmp_path, cwd="/repo", model="model"),
+    )
+    recorder_session.add_user("keep")
+    recorder_session.add_user("old")
+    recorder_session.add_assistant("old response")
+    recorder_session.add_user("latest")
+
+    recorder_session.compact(lambda messages: "summarized old context")
+
+    assert recorder_session._recorder is not None
+    entries, _ = read_entries(recorder_session._recorder.path)
+    summary = entries[-2]
+    compact = entries[-1]
+
+    assert summary["type"] == "message"
+    assert summary["data"]["content"] == "[Context summary: summarized old context]"
+    assert summary["data"]["is_summary"] is True
+    assert compact["type"] == "compact"
+    assert compact["data"]["summary_seq"] == summary["seq"]
+    assert "replacement_message" not in compact["data"]
+
+
+def test_load_session_ignores_unreferenced_summary_messages(tmp_path):
+    recorder = SessionRecorder.create(root=tmp_path, cwd="/repo", model="model")
+    recorder.record_message({"role": "user", "content": "hello"})
+    recorder.record_summary({"role": "user", "content": "[Context summary: orphan]"})
+
+    loaded = load_session(recorder.path, sink=SilentSink())
+
+    assert loaded.messages == ({"role": "user", "content": "hello"},)
+
+
+def test_load_session_ignores_compact_when_summary_is_missing(tmp_path):
+    recorder = SessionRecorder.create(root=tmp_path, cwd="/repo", model="model")
+    recorder.record_message({"role": "user", "content": "old"})
+    second = recorder.record_message({"role": "assistant", "content": "old response"})
+    recorder.record_compact(tail_start_seq=second["seq"] + 1, summary_seq=999)
+
+    loaded = load_session(recorder.path, sink=SilentSink())
+
+    assert loaded.messages == (
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old response"},
+    )
+
+
 def test_load_session_applies_chained_compact_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(session_module, "TOKEN_LIMIT", 1)
     recorder_session = Session(
@@ -232,10 +282,14 @@ class FailingCompactRecorder:
         self._seq += 1
         return cast(SessionEntry, {"seq": self._seq})
 
+    def record_summary(self, message: Mapping[str, Any]) -> SessionEntry:
+        self._seq += 1
+        return cast(SessionEntry, {"seq": self._seq})
+
     def record_usage(self, **_: Any) -> None:
         pass
 
-    def record_compact(self, *, start_seq: int, end_seq: int, replacement_message: dict[str, Any]) -> SessionEntry:
+    def record_compact(self, *, tail_start_seq: int, summary_seq: int) -> SessionEntry:
         raise OSError("disk full")
 
 

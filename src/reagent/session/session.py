@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import bisect
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -188,17 +187,14 @@ class Session:
             return
 
         replacement = UserMessage(role="user", content=f"[Context summary: {summary}]")
-        entry_seq: int | None = None
+        summary_seq: int | None = None
         if self._recorder is not None and compacted_seqs:
-            entry = self._recorder.record_compact(
-                start_seq=min(compacted_seqs),
-                end_seq=max(compacted_seqs),
-                replacement_message=dict(replacement),
-            )
-            # Store the compact entry's own seq so a subsequent compact can
-            # identify and replace this summary by seq range during replay.
-            entry_seq = entry["seq"]
-        self._history[1:compact_end] = [(replacement, entry_seq)]
+            tail_start_seq = next((seq for _, seq in self._history[compact_end:] if seq is not None), None)
+            if tail_start_seq is not None:
+                summary_entry = self._recorder.record_summary(replacement)
+                summary_seq = summary_entry["seq"]
+                self._recorder.record_compact(tail_start_seq=tail_start_seq, summary_seq=summary_seq)
+        self._history[1:compact_end] = [(replacement, summary_seq)]
 
     def truncate(self) -> None:
         # Drop oldest turns (from index 1) until history fits within TOKEN_LIMIT.
@@ -212,28 +208,27 @@ class Session:
 
 def _apply_compact(
     replayed: list[tuple[int, dict[str, Any]]],
-    entry_seq: int,
+    summaries: dict[int, dict[str, Any]],
     data: dict[str, Any],
 ) -> list[tuple[int, dict[str, Any]]]:
-    start_seq = data.get("start_seq")
-    end_seq = data.get("end_seq")
-    replacement = data.get("replacement_message")
+    tail_start_seq = data.get("tail_start_seq")
+    summary_seq = data.get("summary_seq")
 
-    if not (isinstance(start_seq, int) and isinstance(end_seq, int) and isinstance(replacement, dict)):
+    if not (isinstance(tail_start_seq, int) and isinstance(summary_seq, int)):
         return replayed
 
-    # Sort before filtering: chained compacts can leave replayed out-of-order
-    # (a prior compact's entry_seq may exceed later message seqs), which would
-    # make bisect_left produce the wrong insertion index.
-    filtered = sorted(
-        [(s, m) for s, m in replayed if not start_seq <= s <= end_seq],
-        key=lambda t: t[0],
-    )
-    insert_at = bisect.bisect_left([s for s, _ in filtered], start_seq)
-    # Use entry_seq (the compact entry's own seq) so a subsequent compact can
-    # identify and replace this summary by seq range during replay.
-    filtered.insert(insert_at, (entry_seq, cast(dict[str, Any], replacement)))
-    return filtered
+    summary = next(((s, m) for s, m in replayed if s == summary_seq), None)
+    if summary is None and summary_seq in summaries:
+        summary = (summary_seq, summaries[summary_seq])
+
+    if summary is None:
+        return replayed
+
+    # Seed (index 0) is always preserved; everything in (seed, tail_start_seq) is
+    # replaced by the summary; everything from tail_start_seq onward survives.
+    head = replayed[:1]
+    tail = [(s, m) for s, m in replayed if s >= tail_start_seq]
+    return head + [summary] + tail
 
 
 def _reconstruct_result(result_type: str, content: str, result_data: Any) -> ToolResult:
@@ -334,6 +329,7 @@ def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
     entries = [entry for entry in entries if entry["session_id"] == session_id]
     session = Session(sink=sink, recorder=SessionRecorder.resume(path=resolved, session_id=session_id, entries=entries))
     replayed_messages: list[tuple[int, dict[str, Any]]] = []
+    summaries: dict[int, dict[str, Any]] = {}
 
     for entry in entries:
         event_type = entry["type"]
@@ -341,10 +337,13 @@ def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
 
         if event_type == "message":
             # Keep raw data so replay_sink can access is_think / result_type / result_data.
-            replayed_messages.append((entry["seq"], data))
+            if data.get("is_summary"):
+                summaries[entry["seq"]] = data
+            else:
+                replayed_messages.append((entry["seq"], data))
 
         elif event_type == "compact":
-            replayed_messages = _apply_compact(replayed_messages, entry["seq"], data)
+            replayed_messages = _apply_compact(replayed_messages, summaries, data)
 
         elif event_type == "usage":
             session.llm_calls += 1

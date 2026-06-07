@@ -39,7 +39,7 @@ def _data_root() -> Path:
     return Path(os.environ.get("REAGENT_HOME", "~/.reagent")).expanduser()
 
 
-_INTERNAL_FIELDS = frozenset({"id", "parent_id", "is_think", "result_type", "result_data"})
+_INTERNAL_FIELDS = frozenset({"id", "parent_id", "is_think", "is_summary", "result_type", "result_data"})
 
 
 def to_provider_message(message: Mapping[str, Any]) -> dict[str, Any]:
@@ -192,6 +192,12 @@ class SessionRecorder:
             self._last_message_id = message_id
         return entry
 
+    def record_summary(self, message: Mapping[str, Any]) -> SessionEntry:
+        last_message_id = self._last_message_id
+        entry = self.record_message({**message, "is_summary": True})
+        self._last_message_id = last_message_id
+        return entry
+
     def record_usage(
         self,
         *,
@@ -210,13 +216,12 @@ class SessionRecorder:
             },
         )
 
-    def record_compact(self, *, start_seq: int, end_seq: int, replacement_message: dict[str, Any]) -> SessionEntry:
+    def record_compact(self, *, tail_start_seq: int, summary_seq: int) -> SessionEntry:
         return self._write(
             "compact",
             {
-                "start_seq": start_seq,
-                "end_seq": end_seq,
-                "replacement_message": jsonable(replacement_message),
+                "tail_start_seq": tail_start_seq,
+                "summary_seq": summary_seq,
             },
         )
 
