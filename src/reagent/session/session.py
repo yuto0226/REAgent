@@ -223,17 +223,19 @@ def _apply_compact(
     return head + [summary] + tail
 
 
+_RESULT_REGISTRY: dict[str, type[ToolResult]] = {
+    "ShellResult": ShellResult,
+    "ReadResult": ReadResult,
+    "DiffResult": DiffResult,
+    "ErrorResult": ErrorResult,
+}
+
+
 def _reconstruct_result(result_type: str, content: str, result_data: Any) -> ToolResult:
-    if isinstance(result_data, dict):
+    cls = _RESULT_REGISTRY.get(result_type)
+    if cls is not None and isinstance(result_data, dict):
         try:
-            if result_type == "ShellResult":
-                return ShellResult(**result_data)
-            if result_type == "ReadResult":
-                return ReadResult(**result_data)
-            if result_type == "DiffResult":
-                return DiffResult(**result_data)
-            if result_type == "ErrorResult":
-                return ErrorResult(**result_data)
+            return cls(**result_data)
         except TypeError:
             pass
     return ShellResult(content)
@@ -310,6 +312,8 @@ def replay_sink(sink: OutputSink, data: dict[str, Any]) -> None:
 
 def load_session(path: str | Path, sink: OutputSink | None = None) -> Session:
     resolved = Path(path).expanduser()
+    # Read without session_id first so we can extract it from the meta entry.
+    # The file may have been renamed, so the stem is not a reliable session_id.
     entries, _ = read_entries(resolved)
 
     # Prefer session_id from the meta entry; fall back to first entry's session_id
