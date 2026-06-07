@@ -24,6 +24,7 @@ from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
 from rich.style import Style as RichStyle
 
+from reagent.compact import make_compact_fn
 from reagent.rendering import (
     ASSISTANT_BULLET_STYLE,
     GUIDE_STYLE,
@@ -35,7 +36,8 @@ from reagent.rendering import (
 )
 from reagent.results import ErrorResult, ToolResult
 from reagent.session import Session
-from reagent.session.turn import run_turn
+from reagent.session.turn import MODEL, run_turn
+from reagent.slash_commands import SlashResult, dispatch
 
 # Map Shift+Enter escape sequences to F20 as a proxy key.
 # Terminals supporting kitty keyboard protocol send \x1b[13;2u;
@@ -83,6 +85,13 @@ class _ReplState:
     hint: str = ""
     active_turn: asyncio.Task | None = None
     last_ctrl_c: float = 0.0
+
+
+@dataclass(frozen=True)
+class _SlashRoute:
+    action: Literal["exit", "handled", "submit"]
+    prompt: str = ""
+    message: str = ""
 
 
 class _Outbox:
@@ -187,7 +196,7 @@ def _fmt_thinking(frame: str, *, elapsed: float, token_part: str) -> FormattedTe
     )
 
 
-def _enter_action(text: str, *, is_running: bool) -> Literal["newline", "hint", "exit", "submit", "ignore"]:
+def _enter_action(text: str, *, is_running: bool) -> Literal["newline", "hint", "submit", "ignore"]:
     if text.endswith("\\"):
         return "newline"
     stripped = text.strip()
@@ -195,9 +204,17 @@ def _enter_action(text: str, *, is_running: bool) -> Literal["newline", "hint", 
         return "ignore"
     if is_running:
         return "hint"
-    if stripped.lower() in ("/quit", "/exit"):
-        return "exit"
     return "submit"
+
+
+def _route_slash_result(user_input: str, result: SlashResult) -> _SlashRoute:
+    if result.outcome == "not_slash":
+        return _SlashRoute(action="submit", prompt=user_input)
+    if result.outcome == "submit_prompt":
+        return _SlashRoute(action="submit", prompt=result.prompt)
+    if result.outcome == "exit":
+        return _SlashRoute(action="exit")
+    return _SlashRoute(action="handled", message=result.message)
 
 
 def _exit_hint_expired(*, now: float, last_ctrl_c: float, hint: str, active_turn: bool) -> bool:
@@ -382,9 +399,6 @@ async def run(session: Session) -> None:
         elif action == "hint":
             state.hint = _BUSY_HINT
             _invalidate()
-        elif action == "exit":
-            event.current_buffer.reset()
-            input_queue.put_nowait(None)
         elif action == "submit":
             text = buf.text
             event.current_buffer.reset()
@@ -472,12 +486,24 @@ async def run(session: Session) -> None:
     )
 
     async def _process_turns() -> None:
+        compact_fn = make_compact_fn(MODEL)
         while True:
             user_input = await input_queue.get()
             if user_input is None:
                 output_app.exit()
                 return
 
+            route = _route_slash_result(user_input, dispatch(user_input, session, compact_fn=compact_fn))
+            if route.action == "exit":
+                output_app.exit()
+                return
+            if route.action == "handled":
+                if route.message:
+                    _commit(lambda text: terminal_console.print(text, highlight=False), route.message)
+                    await outbox.drain()
+                continue
+
+            user_input = route.prompt
             session.emit_user(user_input)
             await outbox.drain()
             session.add_user(user_input)
