@@ -134,4 +134,15 @@ def dispatch(
     if command.name == "status":
         return SlashResult(outcome="handled", message=_format_status(session))
 
+    if command.name == "compact":
+        if compact_fn is None:
+            return SlashResult(outcome="handled", message="Compact is unavailable")
+        try:
+            changed = session.compact(compact_fn, force=True)
+        except OSError as exc:
+            return SlashResult(outcome="handled", message=f"Compact failed: {exc}")
+        if changed:
+            return SlashResult(outcome="handled", message="Context compacted")
+        return SlashResult(outcome="handled", message="Nothing to compact yet")
+
     return SlashResult(outcome="handled", message=f"Command /{command.name} is not available yet")
