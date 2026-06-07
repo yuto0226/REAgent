@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reagent.session.session import Message, Session
 
 
 SlashAction = Literal["local", "prompt"]
 SlashOrigin = Literal["builtin"]
 SlashAvailability = Literal["idle", "running", "any"]
+SlashOutcome = Literal["not_slash", "unknown", "exit", "handled", "submit_prompt"]
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,15 @@ class ParsedSlash:
 
     name: str
     args: str
+
+
+@dataclass(frozen=True)
+class SlashResult:
+    """The REPL-facing result of slash dispatch."""
+
+    outcome: SlashOutcome
+    message: str = ""
+    prompt: str = ""
 
 
 def parse(text: str) -> ParsedSlash | None:
@@ -80,3 +94,44 @@ def find(name: str) -> SlashCommand | None:
         if normalized == command.name or normalized in command.aliases:
             return command
     return None
+
+
+def _format_status(session: Session) -> str:
+    return "\n".join(
+        [
+            f"Turns: {session.turns:,}",
+            f"LLM calls: {session.llm_calls:,}",
+            f"Tool calls: {session.tool_calls:,}",
+            "Tokens: "
+            f"total={session.total_tokens:,} "
+            f"input={session.prompt_tokens:,} "
+            f"output={session.completion_tokens:,} "
+            f"cached={session.cached_tokens:,} "
+            f"reasoning={session.reasoning_tokens:,}",
+        ]
+    )
+
+
+def dispatch(
+    text: str,
+    session: Session,
+    compact_fn: Callable[[list[Message]], str] | None = None,
+) -> SlashResult:
+    parsed = parse(text)
+    if parsed is None:
+        return SlashResult(outcome="not_slash")
+
+    command = find(parsed.name)
+    if command is None:
+        return SlashResult(outcome="unknown", message=f"Unknown command: /{parsed.name}")
+
+    if parsed.args and not command.accepts_args:
+        return SlashResult(outcome="handled", message=f"Command /{command.name} does not accept arguments")
+
+    if command.name == "exit":
+        return SlashResult(outcome="exit")
+
+    if command.name == "status":
+        return SlashResult(outcome="handled", message=_format_status(session))
+
+    return SlashResult(outcome="handled", message=f"Command /{command.name} is not available yet")
