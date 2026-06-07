@@ -25,6 +25,7 @@ from rich.console import Console
 from rich.style import Style as RichStyle
 
 from reagent.compact import make_compact_fn
+from reagent.config import Config
 from reagent.rendering import (
     ASSISTANT_BULLET_STYLE,
     GUIDE_STYLE,
@@ -36,7 +37,7 @@ from reagent.rendering import (
 )
 from reagent.results import ErrorResult, ToolResult
 from reagent.session import Session
-from reagent.session.turn import MODEL, run_turn
+from reagent.session.turn import run_turn
 from reagent.slash_commands import SlashCommand, SlashRender, SlashResult, completions, dispatch
 
 # Map Shift+Enter escape sequences to F20 as a proxy key.
@@ -266,7 +267,7 @@ def _make_app(*, layout: Layout | None, key_bindings: KeyBindingsBase | None) ->
     )
 
 
-async def run(session: Session) -> None:
+async def run(session: Session, config: Config) -> None:
     terminal_console = Console(force_terminal=True, theme=TERMINAL_THEME)
     terminal_renderer = RichRenderer(console=terminal_console, use_live=False)
     state = _ReplState()
@@ -555,7 +556,7 @@ async def run(session: Session) -> None:
     )
 
     async def _process_turns() -> None:
-        compact_fn = make_compact_fn(MODEL)
+        compact_fn = make_compact_fn(config.llm.model)
         while True:
             user_input = await input_queue.get()
             if user_input is None:
@@ -583,7 +584,7 @@ async def run(session: Session) -> None:
             await outbox.drain()
             session.add_user(user_input)
 
-            turn_task = asyncio.create_task(run_turn(session))
+            turn_task = asyncio.create_task(run_turn(session, config))
             state.active_turn = turn_task
             loop.add_signal_handler(signal.SIGINT, turn_task.cancel)
             state.thinking_at = time.monotonic()
@@ -637,8 +638,8 @@ async def run(session: Session) -> None:
         )
 
 
-def start(session: Session) -> None:
+def start(session: Session, config: Config) -> None:
     try:
-        asyncio.run(run(session))
+        asyncio.run(run(session, config))
     except KeyboardInterrupt:
         pass
