@@ -9,6 +9,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "google-genai>=2.6.0",
     "litellm>=1.86.1",
+    "mcp>=1.27.2",
     "openai>=2.38.0",
     "prompt-toolkit>=3.0.52",
     "rich>=15.0.0",
