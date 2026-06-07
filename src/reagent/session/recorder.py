@@ -173,7 +173,7 @@ class SessionRecorder:
         recorder._dir_ensured = True  # resume path already exists
 
         for entry in entries:
-            if entry["type"] == "message":
+            if entry["type"] == "message" and not entry["data"].get("is_summary"):
                 message_id = entry["data"].get("id")
                 if isinstance(message_id, str):
                     recorder._last_message_id = message_id
