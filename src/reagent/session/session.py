@@ -66,6 +66,18 @@ class Session:
         return self.prompt_tokens + self.completion_tokens
 
     @property
+    def context_tokens(self) -> int:
+        return self._estimate_tokens()
+
+    @property
+    def token_limit(self) -> int:
+        return TOKEN_LIMIT
+
+    @property
+    def is_compacted(self) -> bool:
+        return any(m.get("content", "").startswith("[Context summary:") for m in self.messages if m["role"] == "user")
+
+    @property
     def messages(self) -> tuple[Message, ...]:
         return tuple(m for m, _ in self._history)
 

@@ -5,9 +5,12 @@ import re
 import textwrap
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from reagent.session.session import Session
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.segment import Segment, Segments
@@ -304,6 +307,58 @@ class RichRenderer:
     def status(self, msg: str) -> None:
         self.console.print()
         self.console.print(Text(msg, style="reagent.status"))
+
+    def notice(self, text: str) -> None:
+        if not text:
+            return
+        self.console.print()
+        self._print_hanging_lines(text.splitlines() or [""], bullet_style=GUIDE_STYLE, content_style="dim")
+
+    def error(self, text: str) -> None:
+        if not text:
+            return
+        self.console.print()
+        self._print_hanging_lines(
+            self._clip_lines(text), bullet_style=Style.parse("red"), content_style="reagent.error"
+        )
+
+    def status_panel(self, session: Session) -> None:
+        from rich import box as rich_box
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text as RichText
+
+        ctx = session.context_tokens
+        limit = session.token_limit
+        pct = ctx / limit * 100 if limit else 0
+        bar_w = 20
+        filled = round(ctx / limit * bar_w) if limit else 0
+
+        bar = RichText()
+        bar.append("█" * filled)
+        bar.append("░" * (bar_w - filled), style="dim")
+        bar.append(f"  {ctx:,} / {limit:,}  ({pct:.0f}%)")
+        if session.is_compacted:
+            bar.append("  compacted", style="dim")
+
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="dim", no_wrap=True)
+        grid.add_column(no_wrap=True)
+
+        grid.add_row(
+            "Turns",
+            f"{session.turns:,}    LLM calls  {session.llm_calls:,}    Tool calls  {session.tool_calls:,}",
+        )
+        cached = f"  (+ {session.cached_tokens:,} cached)" if session.cached_tokens else ""
+        reasoning = f"  reasoning {session.reasoning_tokens:,}" if session.reasoning_tokens else ""
+        grid.add_row(
+            "Tokens",
+            f"{session.total_tokens:,}  in={session.prompt_tokens:,}  out={session.completion_tokens:,}{cached}{reasoning}",
+        )
+        grid.add_row("Context", bar)
+
+        self.console.print()
+        self.console.print(Panel(grid, title="Status", box=rich_box.ROUNDED, padding=(0, 1), expand=False))
 
     def prompt(self, text: str) -> None:
         self.console.print(Text(text, style="reagent.prompt"), end="")
