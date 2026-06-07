@@ -155,17 +155,21 @@ class Session:
         # ~4 chars per token; rough estimate, not precise.
         return len(json.dumps([m for m, _ in self._history], default=str)) // 4
 
-    def compact(self, completion_fn: Callable[[list[Message]], str]) -> None:
+    def compact(self, completion_fn: Callable[[list[Message]], str], *, force: bool = False) -> bool:
         tokens = self._estimate_tokens()
-        if tokens <= TOKEN_LIMIT:
-            return
+        if tokens <= TOKEN_LIMIT and not force:
+            return False
 
-        self.emit_status(f"[!] compacting ... ({tokens})\n")
+        if tokens > TOKEN_LIMIT:
+            self.emit_status(f"[!] compacting ... ({tokens})\n")
         turn_starts = [i for i, (m, _) in enumerate(self._history) if m["role"] == "user"]
 
         if len(turn_starts) < 2:
+            if force:
+                return False
+            before = self.messages
             self.truncate()
-            return
+            return self.messages != before
 
         compact_end = turn_starts[-1]
         # _history[0] is the seed user message; preserve it and the latest turn.
@@ -175,8 +179,9 @@ class Session:
         try:
             summary = completion_fn(to_compact)
         except Exception:
+            before = self.messages
             self.truncate()
-            return
+            return self.messages != before
 
         replacement = UserMessage(role="user", content=f"[Context summary: {summary}]")
         summary_seq: int | None = None
@@ -187,6 +192,7 @@ class Session:
                 summary_seq = summary_entry["seq"]
                 self._recorder.record_compact(tail_start_seq=tail_start_seq, summary_seq=summary_seq)
         self._history[1:compact_end] = [(replacement, summary_seq)]
+        return True
 
     def truncate(self) -> None:
         # Drop oldest turns (from index 1) until history fits within TOKEN_LIMIT.
