@@ -37,7 +37,7 @@ from reagent.rendering import (
 from reagent.results import ErrorResult, ToolResult
 from reagent.session import Session
 from reagent.session.turn import MODEL, run_turn
-from reagent.slash_commands import SlashCommand, SlashResult, completions, dispatch
+from reagent.slash_commands import SlashCommand, SlashRender, SlashResult, completions, dispatch
 
 # Map Shift+Enter escape sequences to F20 as a proxy key.
 # Terminals supporting kitty keyboard protocol send \x1b[13;2u;
@@ -97,8 +97,7 @@ class _SlashRoute:
     action: Literal["exit", "handled", "submit"]
     prompt: str = ""
     message: str = ""
-    is_error: bool = False
-    slash_name: str = ""
+    render: SlashRender = "default"
 
 
 class _Outbox:
@@ -221,9 +220,8 @@ def _route_slash_result(user_input: str, result: SlashResult) -> _SlashRoute:
         return _SlashRoute(action="submit", prompt=result.prompt)
     if result.outcome == "exit":
         return _SlashRoute(action="exit")
-    return _SlashRoute(
-        action="handled", message=result.message, is_error=result.is_error, slash_name=result.command_name
-    )
+    # covers "handled" and "unknown"
+    return _SlashRoute(action="handled", message=result.message, render=result.render)
 
 
 def _exit_hint_expired(*, now: float, last_ctrl_c: float, hint: str, active_turn: bool) -> bool:
@@ -569,16 +567,14 @@ async def run(session: Session) -> None:
                 output_app.exit()
                 return
             if route.action == "handled":
-                if route.slash_name == "status":
+                if route.render == "panel":
                     outbox.submit(lambda: terminal_renderer.status_panel(session))
                 elif route.message:
-                    if route.is_error:
-                        fn = terminal_renderer.error
-                    elif route.slash_name == "compact":
-                        fn = terminal_renderer.notice
-                    else:
-                        fn = terminal_renderer.status
-                    _commit(fn, route.message)
+                    render_fn = {
+                        "error": terminal_renderer.error,
+                        "notice": terminal_renderer.notice,
+                    }.get(route.render, terminal_renderer.status)
+                    _commit(render_fn, route.message)
                 await outbox.drain()
                 continue
 

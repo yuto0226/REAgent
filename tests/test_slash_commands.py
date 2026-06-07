@@ -1,6 +1,6 @@
 from reagent.protocol import SilentSink
 from reagent.session import Session
-from reagent.slash_commands import SlashCommand, builtins, dispatch, find, parse
+from reagent.slash_commands import BUILTINS, SlashCommand, dispatch, find, parse
 
 
 def test_parse_ignores_normal_input():
@@ -34,27 +34,22 @@ def test_help_is_not_registered():
     assert find("help") is None
 
 
-def test_builtin_metadata_reserves_extension_fields():
+def test_builtin_metadata():
     command = find("status")
 
     assert command == SlashCommand(
         name="status",
         aliases=(),
         description="Show local session stats",
-        action="local",
         origin="builtin",
-        accepts_args=False,
-        arg_hint="",
-        visible=True,
-        template=None,
     )
 
 
 def test_builtins_store_aliases_on_canonical_commands():
-    names = [command.name for command in builtins()]
+    names = [command.name for command in BUILTINS]
 
     assert names == ["exit", "status", "compact"]
-    assert all(command.name != "quit" for command in builtins())
+    assert all(command.name != "quit" for command in BUILTINS)
 
 
 def test_dispatch_returns_not_slash_for_normal_input():
@@ -99,9 +94,7 @@ def test_dispatch_status_reports_session_counters_without_history_change():
     result = dispatch("/status", session)
 
     assert result.outcome == "handled"
-    assert result.message == (
-        "Turns: 1\nLLM calls: 2\nTool calls: 3\nTokens: total=1,250 input=1,000 output=250 cached=75 reasoning=30"
-    )
+    assert result.render == "panel"
     assert session.messages == before
 
 

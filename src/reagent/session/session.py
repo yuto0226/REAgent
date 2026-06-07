@@ -10,6 +10,7 @@ from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, To
 from reagent.session.recorder import SessionRecorder, jsonable, read_entries, to_provider_message
 
 TOKEN_LIMIT = 60_000
+_COMPACT_PREFIX = "[Context summary:"
 
 
 class UserMessage(TypedDict):
@@ -75,7 +76,7 @@ class Session:
 
     @property
     def is_compacted(self) -> bool:
-        return any(m.get("content", "").startswith("[Context summary:") for m in self.messages if m["role"] == "user")
+        return any(m.get("content", "").startswith(_COMPACT_PREFIX) for m in self.messages if m["role"] == "user")
 
     @property
     def messages(self) -> tuple[Message, ...]:
@@ -195,7 +196,7 @@ class Session:
             self.truncate()
             return self.messages != before
 
-        replacement = UserMessage(role="user", content=f"[Context summary: {summary}]")
+        replacement = UserMessage(role="user", content=f"{_COMPACT_PREFIX} {summary}]")
         summary_seq: int | None = None
         if self._recorder is not None and compacted_seqs:
             tail_start_seq = next((seq for _, seq in self._history[compact_end:] if seq is not None), None)

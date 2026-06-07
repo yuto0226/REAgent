@@ -8,9 +8,9 @@ if TYPE_CHECKING:
     from reagent.session.session import Message, Session
 
 
-SlashAction = Literal["local", "prompt"]
 SlashOrigin = Literal["builtin"]
 SlashOutcome = Literal["not_slash", "unknown", "exit", "handled", "submit_prompt"]
+SlashRender = Literal["default", "notice", "error", "panel"]
 
 
 @dataclass(frozen=True)
@@ -20,12 +20,9 @@ class SlashCommand:
     name: str
     aliases: tuple[str, ...]
     description: str
-    action: SlashAction
     origin: SlashOrigin
     accepts_args: bool = False
-    arg_hint: str = ""
     visible: bool = True
-    template: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,7 +40,7 @@ class SlashResult:
     outcome: SlashOutcome
     message: str = ""
     prompt: str = ""
-    is_error: bool = False
+    render: SlashRender = "default"
     command_name: str = ""
 
 
@@ -62,38 +59,31 @@ def parse(text: str) -> ParsedSlash | None:
     return ParsedSlash(name=name, args=args)
 
 
-_BUILTINS: tuple[SlashCommand, ...] = (
+BUILTINS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="exit",
         aliases=("quit",),
         description="Exit the REPL",
-        action="local",
         origin="builtin",
     ),
     SlashCommand(
         name="status",
         aliases=(),
         description="Show local session stats",
-        action="local",
         origin="builtin",
     ),
     SlashCommand(
         name="compact",
         aliases=(),
         description="Compact the current session context",
-        action="local",
         origin="builtin",
     ),
 )
 
 
-def builtins() -> tuple[SlashCommand, ...]:
-    return _BUILTINS
-
-
 def find(name: str) -> SlashCommand | None:
     normalized = name.lower()
-    for command in _BUILTINS:
+    for command in BUILTINS:
         if normalized == command.name or normalized in command.aliases:
             return command
     return None
@@ -103,24 +93,8 @@ def completions(prefix: str) -> tuple[SlashCommand, ...]:
     normalized = prefix.removeprefix("/").lower()
     return tuple(
         c
-        for c in _BUILTINS
+        for c in BUILTINS
         if c.visible and (c.name.startswith(normalized) or any(a.startswith(normalized) for a in c.aliases))
-    )
-
-
-def _format_status(session: Session) -> str:
-    return "\n".join(
-        [
-            f"Turns: {session.turns:,}",
-            f"LLM calls: {session.llm_calls:,}",
-            f"Tool calls: {session.tool_calls:,}",
-            "Tokens: "
-            f"total={session.total_tokens:,} "
-            f"input={session.prompt_tokens:,} "
-            f"output={session.completion_tokens:,} "
-            f"cached={session.cached_tokens:,} "
-            f"reasoning={session.reasoning_tokens:,}",
-        ]
     )
 
 
@@ -135,7 +109,7 @@ def dispatch(
 
     command = find(parsed.name)
     if command is None:
-        return SlashResult(outcome="unknown", message=f"Unknown command: /{parsed.name}", is_error=True)
+        return SlashResult(outcome="unknown", message=f"Unknown command: /{parsed.name}", render="error")
 
     if parsed.args and not command.accepts_args:
         return SlashResult(outcome="handled", message=f"Command /{command.name} does not accept arguments")
@@ -144,23 +118,23 @@ def dispatch(
         return SlashResult(outcome="exit")
 
     if command.name == "status":
-        return SlashResult(outcome="handled", message=_format_status(session), command_name="status")
+        return SlashResult(outcome="handled", render="panel", command_name="status")
 
     if command.name == "compact":
         if compact_fn is None:
             return SlashResult(
-                outcome="handled", message="Compact is unavailable", is_error=True, command_name="compact"
+                outcome="handled", message="Compact is unavailable", render="error", command_name="compact"
             )
 
         try:
             changed = session.compact(compact_fn, force=True)
         except OSError as exc:
             return SlashResult(
-                outcome="handled", message=f"Compact failed: {exc}", is_error=True, command_name="compact"
+                outcome="handled", message=f"Compact failed: {exc}", render="error", command_name="compact"
             )
 
         if changed:
-            return SlashResult(outcome="handled", message="Context compacted", command_name="compact")
+            return SlashResult(outcome="handled", message="Context compacted", render="notice", command_name="compact")
 
         return SlashResult(outcome="handled", message="Nothing to compact yet", command_name="compact")
 
