@@ -234,6 +234,34 @@ def test_load_session_ignores_unreferenced_summary_messages(tmp_path):
     assert loaded.messages == ({"role": "user", "content": "hello"},)
 
 
+def test_resumed_recorder_does_not_parent_new_messages_to_summary(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_module, "TOKEN_LIMIT", 1)
+    recorder_session = Session(
+        sink=SilentSink(),
+        recorder=SessionRecorder.create(root=tmp_path, cwd="/repo", model="model"),
+    )
+    recorder_session.add_user("keep")
+    recorder_session.add_user("old")
+    recorder_session.add_assistant("old response")
+    recorder_session.add_user("latest")
+    recorder_session.compact(lambda messages: "summary")
+    assert recorder_session._recorder is not None
+
+    loaded = load_session(recorder_session._recorder.path, sink=SilentSink())
+    loaded.add_user("next")
+    entries, _ = read_entries(recorder_session._recorder.path)
+
+    latest_message = entries[-1]["data"]
+    latest_real_message = next(
+        entry["data"]
+        for entry in reversed(entries[:-1])
+        if entry["type"] == "message" and not entry["data"].get("is_summary")
+    )
+    summary = next(entry["data"] for entry in entries if entry["data"].get("is_summary"))
+    assert latest_message["parent_id"] == latest_real_message["id"]
+    assert latest_message["parent_id"] != summary["id"]
+
+
 def test_load_session_ignores_compact_when_summary_is_missing(tmp_path):
     recorder = SessionRecorder.create(root=tmp_path, cwd="/repo", model="model")
     recorder.record_message({"role": "user", "content": "old"})
