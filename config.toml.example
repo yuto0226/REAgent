@@ -1,0 +1,30 @@
+[llm]
+model = "anthropic/claude-sonnet-4-6"
+reasoning_effort = "medium"
+thinking_budget_tokens = 8192
+
+[llm.models]
+available = [
+  "openai/gpt-5.1",
+  "anthropic/claude-sonnet-4-6",
+]
+
+[agent]
+max_turns = 50
+
+[providers.anthropic]
+key = "..."
+
+[providers.openai]
+key = "..."
+
+[mcp.servers.example]
+enabled = true
+transport = "stdio"
+command = "..."
+args = []
+env = {}
+
+[skills]
+enabled = true
+paths = []
