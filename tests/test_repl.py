@@ -6,6 +6,7 @@ from reagent.rendering import TERMINAL_THEME
 from reagent.repl import (
     _Call,
     _PendingCalls,
+    _SlashRoute,
     _enter_action,
     _exit_hint_expired,
     _fmt_hint,
@@ -14,8 +15,10 @@ from reagent.repl import (
     _fmt_usage,
     _make_app,
     _print_usage,
+    _route_slash_result,
     _tool_call_bullet_style,
 )
+from reagent.slash_commands import SlashResult
 
 
 def test_thinking_for_text_is_gray_and_not_indented():
@@ -72,8 +75,38 @@ def test_enter_backslash_adds_newline_even_when_running():
 
 
 def test_enter_exit_command_only_exits_when_idle():
-    assert _enter_action("/exit", is_running=False) == "exit"
+    assert _enter_action("/exit", is_running=False) == "submit"
     assert _enter_action("/exit", is_running=True) == "hint"
+
+
+def test_route_slash_result_submits_normal_input():
+    result = _route_slash_result("hello", SlashResult(outcome="not_slash"))
+
+    assert result == _SlashRoute(action="submit", prompt="hello")
+
+
+def test_route_slash_result_submits_expanded_prompt():
+    result = _route_slash_result("/draft topic", SlashResult(outcome="submit_prompt", prompt="expanded prompt"))
+
+    assert result == _SlashRoute(action="submit", prompt="expanded prompt")
+
+
+def test_route_slash_result_exits():
+    result = _route_slash_result("/exit", SlashResult(outcome="exit"))
+
+    assert result == _SlashRoute(action="exit")
+
+
+def test_route_slash_result_keeps_local_message_out_of_prompt_submission():
+    result = _route_slash_result("/status", SlashResult(outcome="handled", message="status text"))
+
+    assert result == _SlashRoute(action="handled", message="status text")
+
+
+def test_route_slash_result_treats_unknown_as_local_message():
+    result = _route_slash_result("/nope", SlashResult(outcome="unknown", message="Unknown command: /nope"))
+
+    assert result == _SlashRoute(action="handled", message="Unknown command: /nope")
 
 
 def test_empty_hint_still_renders_reserved_line():
