@@ -198,6 +198,48 @@ def test_load_session_applies_compact_entries(tmp_path, monkeypatch):
     ]
 
 
+def test_forced_compact_compacts_below_token_limit():
+    session = Session(sink=SilentSink())
+    session.add_user("keep")
+    session.add_user("old")
+    session.add_assistant("old response")
+    session.add_user("latest")
+
+    changed = session.compact(lambda messages: "manual summary", force=True)
+
+    assert changed
+    assert list(session.messages) == [
+        {"role": "user", "content": "keep"},
+        {"role": "user", "content": "[Context summary: manual summary]"},
+        {"role": "user", "content": "latest"},
+    ]
+
+
+def test_automatic_compact_still_skips_below_token_limit():
+    session = Session(sink=SilentSink())
+    session.add_user("keep")
+    session.add_user("old")
+    session.add_assistant("old response")
+    session.add_user("latest")
+    before = session.messages
+
+    changed = session.compact(lambda messages: "automatic summary")
+
+    assert not changed
+    assert session.messages == before
+
+
+def test_forced_compact_returns_false_when_history_is_too_short():
+    session = Session(sink=SilentSink())
+    session.add_user("only")
+    before = session.messages
+
+    changed = session.compact(lambda messages: "manual summary", force=True)
+
+    assert not changed
+    assert session.messages == before
+
+
 def test_compact_writes_summary_as_message_event(tmp_path, monkeypatch):
     monkeypatch.setattr(session_module, "TOKEN_LIMIT", 1)
     recorder_session = Session(
@@ -335,3 +377,22 @@ def test_compact_propagates_recorder_failures(monkeypatch):
         assert str(exc) == "disk full"
     else:
         raise AssertionError("compact should propagate recorder persistence failures")
+
+
+def test_compact_preserves_history_when_recorder_compact_fails(monkeypatch):
+    monkeypatch.setattr(session_module, "TOKEN_LIMIT", 1)
+    session = Session(sink=SilentSink(), recorder=cast(SessionRecorder, FailingCompactRecorder()))
+    session.add_user("keep")
+    session.add_user("old")
+    session.add_assistant("old response")
+    session.add_user("latest")
+    before = session.messages
+
+    try:
+        session.compact(lambda messages: "summary")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("compact should propagate recorder persistence failures")
+
+    assert session.messages == before
