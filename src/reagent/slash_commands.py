@@ -43,6 +43,8 @@ class SlashResult:
     outcome: SlashOutcome
     message: str = ""
     prompt: str = ""
+    is_error: bool = False
+    command_name: str = ""
 
 
 def parse(text: str) -> ParsedSlash | None:
@@ -97,6 +99,15 @@ def find(name: str) -> SlashCommand | None:
     return None
 
 
+def completions(prefix: str) -> tuple[SlashCommand, ...]:
+    normalized = prefix.removeprefix("/").lower()
+    return tuple(
+        c
+        for c in _BUILTINS
+        if c.visible and (c.name.startswith(normalized) or any(a.startswith(normalized) for a in c.aliases))
+    )
+
+
 def _format_status(session: Session) -> str:
     return "\n".join(
         [
@@ -124,7 +135,7 @@ def dispatch(
 
     command = find(parsed.name)
     if command is None:
-        return SlashResult(outcome="unknown", message=f"Unknown command: /{parsed.name}")
+        return SlashResult(outcome="unknown", message=f"Unknown command: /{parsed.name}", is_error=True)
 
     if parsed.args and not command.accepts_args:
         return SlashResult(outcome="handled", message=f"Command /{command.name} does not accept arguments")
@@ -133,17 +144,24 @@ def dispatch(
         return SlashResult(outcome="exit")
 
     if command.name == "status":
-        return SlashResult(outcome="handled", message=_format_status(session))
+        return SlashResult(outcome="handled", message=_format_status(session), command_name="status")
 
     if command.name == "compact":
         if compact_fn is None:
-            return SlashResult(outcome="handled", message="Compact is unavailable")
+            return SlashResult(
+                outcome="handled", message="Compact is unavailable", is_error=True, command_name="compact"
+            )
+
         try:
             changed = session.compact(compact_fn, force=True)
         except OSError as exc:
-            return SlashResult(outcome="handled", message=f"Compact failed: {exc}")
+            return SlashResult(
+                outcome="handled", message=f"Compact failed: {exc}", is_error=True, command_name="compact"
+            )
+
         if changed:
-            return SlashResult(outcome="handled", message="Context compacted")
-        return SlashResult(outcome="handled", message="Nothing to compact yet")
+            return SlashResult(outcome="handled", message="Context compacted", command_name="compact")
+
+        return SlashResult(outcome="handled", message="Nothing to compact yet", command_name="compact")
 
     return SlashResult(outcome="handled", message=f"Command /{command.name} is not available yet")

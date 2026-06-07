@@ -4,7 +4,7 @@ import asyncio
 import signal
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from prompt_toolkit.application import Application, run_in_terminal
@@ -37,7 +37,7 @@ from reagent.rendering import (
 from reagent.results import ErrorResult, ToolResult
 from reagent.session import Session
 from reagent.session.turn import MODEL, run_turn
-from reagent.slash_commands import SlashResult, dispatch
+from reagent.slash_commands import SlashCommand, SlashResult, completions, dispatch
 
 # Map Shift+Enter escape sequences to F20 as a proxy key.
 # Terminals supporting kitty keyboard protocol send \x1b[13;2u;
@@ -63,6 +63,9 @@ _STYLE = PTStyle.from_dict(
         "thinking-for": "fg:ansibrightblack",
         "status": "fg:ansiyellow",
         "hint": "fg:ansibrightblack",
+        "completion": "fg:ansibrightblack",
+        "completion-selected": "fg:ansibrightmagenta bold",
+        "completion-meta": "fg:ansibrightblack",
     }
 )
 
@@ -85,6 +88,8 @@ class _ReplState:
     hint: str = ""
     active_turn: asyncio.Task | None = None
     last_ctrl_c: float = 0.0
+    slash_cmds: list[SlashCommand] = field(default_factory=list)
+    slash_idx: int = 0
 
 
 @dataclass(frozen=True)
@@ -92,6 +97,8 @@ class _SlashRoute:
     action: Literal["exit", "handled", "submit"]
     prompt: str = ""
     message: str = ""
+    is_error: bool = False
+    slash_name: str = ""
 
 
 class _Outbox:
@@ -214,7 +221,9 @@ def _route_slash_result(user_input: str, result: SlashResult) -> _SlashRoute:
         return _SlashRoute(action="submit", prompt=result.prompt)
     if result.outcome == "exit":
         return _SlashRoute(action="exit")
-    return _SlashRoute(action="handled", message=result.message)
+    return _SlashRoute(
+        action="handled", message=result.message, is_error=result.is_error, slash_name=result.command_name
+    )
 
 
 def _exit_hint_expired(*, now: float, last_ctrl_c: float, hint: str, active_turn: bool) -> bool:
@@ -369,6 +378,39 @@ async def run(session: Session) -> None:
     def _get_hint() -> FormattedText:
         return _fmt_hint(state.hint)
 
+    def _has_completions() -> bool:
+        return bool(state.slash_cmds)
+
+    def _get_completion_panel() -> FormattedText:
+        cmds = state.slash_cmds
+        idx = state.slash_idx
+        name_w = max(len(c.name) for c in cmds) + 1  # +1 for /
+        lines: list[tuple[str, str]] = []
+        for i, cmd in enumerate(cmds):
+            sel = i == idx
+            base = "class:completion-selected" if sel else ""
+            meta = "class:completion-selected" if sel else "class:completion-meta"
+            name = f"/{cmd.name}".ljust(name_w + 1)
+            if i > 0:
+                lines.append(("", "\n"))
+            lines += [(base, f"  {name}  "), (meta, cmd.description)]
+        return FormattedText(lines)
+
+    def _update_completions(_buf: Buffer) -> None:
+        text = _buf.text
+        if text.startswith("/") and " " not in text and "\n" not in text:
+            cmds = list(completions(text))
+            if cmds != state.slash_cmds:
+                state.slash_cmds = cmds
+                state.slash_idx = 0
+                _invalidate()
+        elif state.slash_cmds:
+            state.slash_cmds = []
+            state.slash_idx = 0
+            _invalidate()
+
+    buf.on_text_changed += _update_completions
+
     def _schedule_ctrl_c_hint_clear() -> None:
         nonlocal hint_clear_task
         if hint_clear_task is not None:
@@ -392,6 +434,14 @@ async def run(session: Session) -> None:
 
     @kb.add("enter")
     def _submit(event) -> None:
+        if state.slash_cmds:
+            cmd = state.slash_cmds[state.slash_idx]
+            state.slash_cmds = []
+            text = f"/{cmd.name}"
+            buf.reset()
+            state.hint = ""
+            input_queue.put_nowait(text)
+            return
         action = _enter_action(buf.text, is_running=_is_running())
         if action == "newline":
             event.current_buffer.delete_before_cursor()
@@ -404,6 +454,22 @@ async def run(session: Session) -> None:
             event.current_buffer.reset()
             state.hint = ""
             input_queue.put_nowait(text)
+
+    @kb.add("down", filter=Condition(_has_completions), eager=True)
+    @kb.add("tab", filter=Condition(_has_completions), eager=True)
+    def _completion_down(event) -> None:
+        state.slash_idx = (state.slash_idx + 1) % len(state.slash_cmds)
+        _invalidate()
+
+    @kb.add("up", filter=Condition(_has_completions), eager=True)
+    def _completion_up(event) -> None:
+        state.slash_idx = (state.slash_idx - 1) % len(state.slash_cmds)
+        _invalidate()
+
+    @kb.add("escape", filter=Condition(_has_completions), eager=True)
+    def _dismiss_completions(event) -> None:
+        state.slash_cmds = []
+        _invalidate()
 
     @kb.add("f20")
     @kb.add("escape", "enter", eager=True)
@@ -441,7 +507,7 @@ async def run(session: Session) -> None:
 
     layout = Layout(
         # Active tail: gap, pending calls, status, input separator, input,
-        # hint separator, hint/blank.
+        # slash completion panel, hint separator, hint/blank.
         HSplit(
             [
                 ConditionalContainer(
@@ -475,9 +541,14 @@ async def run(session: Session) -> None:
                     dont_extend_height=True,
                 ),
                 Window(FormattedTextControl(lambda: _sep_text(terminal_console.width)), height=1),
+                ConditionalContainer(
+                    Window(FormattedTextControl(_get_completion_panel), dont_extend_height=True),
+                    filter=Condition(_has_completions),
+                ),
                 Window(FormattedTextControl(_get_hint), height=1),
             ]
-        )
+        ),
+        focused_element=buf,
     )
 
     output_app = _make_app(
@@ -498,9 +569,17 @@ async def run(session: Session) -> None:
                 output_app.exit()
                 return
             if route.action == "handled":
-                if route.message:
-                    _commit(lambda text: terminal_console.print(text, highlight=False), route.message)
-                    await outbox.drain()
+                if route.slash_name == "status":
+                    outbox.submit(lambda: terminal_renderer.status_panel(session))
+                elif route.message:
+                    if route.is_error:
+                        fn = terminal_renderer.error
+                    elif route.slash_name == "compact":
+                        fn = terminal_renderer.notice
+                    else:
+                        fn = terminal_renderer.status
+                    _commit(fn, route.message)
+                await outbox.drain()
                 continue
 
             user_input = route.prompt
