@@ -96,6 +96,9 @@ class MCPManager:
             for name, entry in self._tools.items()
         ]
 
+    def list_tools(self) -> list[tuple[str, str, dict[str, Any]]]:
+        return [(name, entry.description, entry.input_schema) for name, entry in self._tools.items()]
+
     def has(self, name: str) -> bool:
         return name in self._tools
 
