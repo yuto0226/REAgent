@@ -25,6 +25,13 @@ command = "..."
 args = []
 env = {}
 
+[mcp.servers.http_example]
+enabled = true
+transport = "http"
+url = "http://localhost:8080/"
+args = []
+env = {}
+
 [skills]
 enabled = true
 paths = []

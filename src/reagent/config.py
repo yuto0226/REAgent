@@ -65,6 +65,7 @@ class MCPServerConfig:
     enabled: bool
     transport: str
     command: str | None
+    url: str | None
     args: list[str]
     env: dict[str, str]
 
@@ -351,10 +352,11 @@ def _validate_mcp(value: Any, path: Path) -> None:
     for name, server in servers.items():
         key_prefix = f"mcp.servers.{name}"
         server_table = _require_table(server, _key(path, key_prefix))
-        _reject_unknown(server_table, {"enabled", "transport", "command", "args", "env"}, path, key_prefix)
+        _reject_unknown(server_table, {"enabled", "transport", "command", "args", "env", "url"}, path, key_prefix)
         _optional_bool(server_table, "enabled", path, f"{key_prefix}.enabled")
         _optional_string(server_table, "transport", path, f"{key_prefix}.transport")
         _optional_string(server_table, "command", path, f"{key_prefix}.command")
+        _optional_string(server_table, "url", path, f"{key_prefix}.url")
         _optional_string_list(server_table, "args", path, f"{key_prefix}.args")
         if "env" in server_table:
             env_table = _require_table(server_table["env"], _key(path, f"{key_prefix}.env"))
@@ -411,12 +413,19 @@ def _to_config(data: dict[str, Any], server_paths: Mapping[str, str]) -> Config:
 def _to_mcp_server(name: str, data: dict[str, Any], path: str) -> MCPServerConfig:
     transport = data.get("transport", "stdio")
     command = data.get("command")
+    url = data.get("url")
+    
     if transport == "stdio" and not command:
         raise ConfigError(f"{path}: mcp.servers.{name}.command is required when transport is stdio")
+    
+    if transport == "http" and not url:
+        raise ConfigError(f"{path}: mcp.servers.{name}.url is required when transport is http")
+    
     return MCPServerConfig(
         enabled=data.get("enabled", True),
         transport=transport,
         command=command,
+        url=url,
         args=list(data.get("args", [])),
         env=dict(data.get("env", {})),
     )
