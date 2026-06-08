@@ -66,6 +66,7 @@ class MCPServerConfig:
     transport: str
     command: str | None
     url: str | None
+    headers: dict[str, str]
     args: list[str]
     env: dict[str, str]
 
@@ -130,28 +131,28 @@ def user_config_path(env: Mapping[str, str] | None = None) -> Path:
 def set_provider_key(provider: str, key: str, env: Mapping[str, str] | None = None) -> Path:
     """Write a provider key into the user config without touching project config."""
     _validate_provider_name(provider)
-    
+
     path = user_config_path(env)
-    
+
     text = _read_user_config_text(path)
     text = _set_provider_key_text(text, provider, key)
     _write_user_config(path, text)
-    
+
     return path
 
 
 def remove_provider_key(provider: str, env: Mapping[str, str] | None = None) -> Path:
     """Remove a provider key from the user config without deleting other settings."""
     _validate_provider_name(provider)
-    
+
     path = user_config_path(env)
     if not path.exists():
         return path
-    
+
     text = _read_user_config_text(path)
     text = _remove_provider_key_text(text, provider)
     _write_user_config(path, text)
-    
+
     return path
 
 
@@ -352,17 +353,16 @@ def _validate_mcp(value: Any, path: Path) -> None:
     for name, server in servers.items():
         key_prefix = f"mcp.servers.{name}"
         server_table = _require_table(server, _key(path, key_prefix))
-        _reject_unknown(server_table, {"enabled", "transport", "command", "args", "env", "url"}, path, key_prefix)
+        _reject_unknown(
+            server_table, {"enabled", "transport", "command", "args", "env", "url", "headers"}, path, key_prefix
+        )
         _optional_bool(server_table, "enabled", path, f"{key_prefix}.enabled")
         _optional_string(server_table, "transport", path, f"{key_prefix}.transport")
         _optional_string(server_table, "command", path, f"{key_prefix}.command")
         _optional_string(server_table, "url", path, f"{key_prefix}.url")
         _optional_string_list(server_table, "args", path, f"{key_prefix}.args")
-        if "env" in server_table:
-            env_table = _require_table(server_table["env"], _key(path, f"{key_prefix}.env"))
-            for env_key, env_value in env_table.items():
-                if not isinstance(env_value, str):
-                    raise ConfigError(f"{path}: {key_prefix}.env.{env_key} must be a string")
+        _optional_string_table(server_table, "env", path, f"{key_prefix}.env")
+        _optional_string_table(server_table, "headers", path, f"{key_prefix}.headers")
 
 
 def _validate_skills(value: Any, path: Path) -> None:
@@ -414,18 +414,19 @@ def _to_mcp_server(name: str, data: dict[str, Any], path: str) -> MCPServerConfi
     transport = data.get("transport", "stdio")
     command = data.get("command")
     url = data.get("url")
-    
+
     if transport == "stdio" and not command:
         raise ConfigError(f"{path}: mcp.servers.{name}.command is required when transport is stdio")
-    
+
     if transport == "http" and not url:
         raise ConfigError(f"{path}: mcp.servers.{name}.url is required when transport is http")
-    
+
     return MCPServerConfig(
         enabled=data.get("enabled", True),
         transport=transport,
         command=command,
         url=url,
+        headers=dict(data.get("headers", {})),
         args=list(data.get("args", [])),
         env=dict(data.get("env", {})),
     )
@@ -463,6 +464,15 @@ def _optional_string_list(table: Mapping[str, Any], name: str, path: Path, key: 
     values = table[name]
     if not isinstance(values, list) or any(not isinstance(item, str) for item in values):
         raise ConfigError(f"{path}: {key} must be a list of strings")
+
+
+def _optional_string_table(table: Mapping[str, Any], name: str, path: Path, key: str) -> None:
+    if name not in table:
+        return
+    inner = _require_table(table[name], _key(path, key))
+    for inner_key, inner_value in inner.items():
+        if not isinstance(inner_value, str):
+            raise ConfigError(f"{path}: {key}.{inner_key} must be a string")
 
 
 def _optional_bool(table: Mapping[str, Any], name: str, path: Path, key: str) -> None:

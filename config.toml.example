@@ -29,6 +29,7 @@ env = {}
 enabled = true
 transport = "http"
 url = "http://localhost:8080/"
+headers = { Authorization = "Bearer ..." }
 args = []
 env = {}
 

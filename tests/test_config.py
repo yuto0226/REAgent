@@ -114,6 +114,26 @@ def test_deep_merge_providers_and_mcp_servers(tmp_path):
     assert config.mcp.servers["fs"].transport == "stdio"
     assert config.mcp.servers["fs"].args == []
     assert config.mcp.servers["fs"].env == {}
+    assert config.mcp.servers["fs"].headers == {}
+
+
+def test_mcp_http_server_parses_url_and_headers(tmp_path):
+    config_path = write_toml(
+        tmp_path / "config.toml",
+        """
+        [mcp.servers.ida]
+        transport = "http"
+        url = "http://127.0.0.1:14542/mcp"
+        headers = { Authorization = "Bearer abc" }
+        """,
+    )
+
+    layers = load_layers(cwd=tmp_path, env={}, extra_config_paths=[config_path])
+
+    server = layers.config.mcp.servers["ida"]
+    assert server.transport == "http"
+    assert server.url == "http://127.0.0.1:14542/mcp"
+    assert server.headers == {"Authorization": "Bearer abc"}
 
 
 def test_llm_models_available_lists_replace(tmp_path):
@@ -181,6 +201,10 @@ def test_apply_provider_env_maps_known_keys_without_overwriting(tmp_path):
         ("[llm.models]\navailable = ['ok', 3]\n", "llm.models.available"),
         ("[mcp.servers.bad]\ncommand = 'run'\nunexpected = true\n", "mcp.servers.bad.unexpected"),
         ("[mcp.servers.bad]\ntransport = 'stdio'\n", "mcp.servers.bad.command"),
+        (
+            "[mcp.servers.bad]\ntransport = 'http'\nurl = 'http://x'\nheaders = { Authorization = 1 }\n",
+            "mcp.servers.bad.headers.Authorization",
+        ),
     ],
 )
 def test_invalid_config_reports_path_and_key(tmp_path, content, message):
