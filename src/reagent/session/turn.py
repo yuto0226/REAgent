@@ -18,7 +18,7 @@ from reagent.results import ErrorResult  # noqa: E402
 from reagent.session.prompt import system_prompt  # noqa: E402
 from reagent.session.recorder import to_provider_message  # noqa: E402
 from reagent.session.session import Session  # noqa: E402
-from reagent.tools import TOOLS, TOOL_HANDLERS  # noqa: E402
+from reagent.tools import TOOLS, TOOLS_BY_NAME  # noqa: E402
 
 
 def _consume_done(task: asyncio.Task[Any]) -> None:
@@ -131,12 +131,8 @@ async def run_turn(session: Session, config: Config) -> None:
                 continue
 
             session.emit_tool_call(tc.id, name, tool_input)
-            handler = TOOL_HANDLERS.get(name)
-            result = (
-                await asyncio.to_thread(handler, tool_input)
-                if handler
-                else ErrorResult(f"Error: unknown tool {name!r}")
-            )
+            tool = TOOLS_BY_NAME.get(name)
+            result = await tool.invoke(tool_input) if tool else ErrorResult(f"Error: unknown tool {name!r}")
 
             session.add_tool_result(tc.id, result)
 

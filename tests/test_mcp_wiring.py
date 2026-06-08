@@ -22,12 +22,12 @@ def write_toml(path: Path, text: str) -> Path:
 def restore_tools():
     all_tools = list(tools_mod._ALL_TOOLS)
     schemas = list(tools_mod.TOOLS)
-    handlers = dict(tools_mod.TOOL_HANDLERS)
+    by_name = dict(tools_mod.TOOLS_BY_NAME)
     yield
     tools_mod._ALL_TOOLS[:] = all_tools
     tools_mod.TOOLS[:] = schemas
-    tools_mod.TOOL_HANDLERS.clear()
-    tools_mod.TOOL_HANDLERS.update(handlers)
+    tools_mod.TOOLS_BY_NAME.clear()
+    tools_mod.TOOLS_BY_NAME.update(by_name)
 
 
 class _FakeTool(Tool):
@@ -47,8 +47,8 @@ def test_register_tools_adds_schema_and_handler(restore_tools):
     tools_mod.register_tools([_FakeTool()])
     assert len(tools_mod.TOOLS) == before + 1
     assert tools_mod.TOOLS[-1]["function"]["name"] == "fake__ping"
-    assert "fake__ping" in tools_mod.TOOL_HANDLERS
-    assert tools_mod.TOOL_HANDLERS["fake__ping"]({}).text == "noop"
+    assert "fake__ping" in tools_mod.TOOLS_BY_NAME
+    assert tools_mod.TOOLS_BY_NAME["fake__ping"].run({}).text == "noop"
 
 
 def test_mcp_specs_selects_enabled_http_servers_with_url(tmp_path):
