@@ -2,7 +2,7 @@ from rich.console import Console
 from rich.color import ColorType
 
 from reagent.rendering import RichRenderer, TERMINAL_THEME, _ThinkingStatus
-from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult
+from reagent.results import DiffResult, ErrorResult, MCPResult, ReadResult, ShellResult
 
 
 def make_renderer(max_lines: int = 80, width: int = 100) -> tuple[RichRenderer, Console]:
@@ -255,6 +255,24 @@ def test_tool_result_truncates_middle_lines():
     assert "    line 6" in output
     assert "    line 7" in output
     assert "line 3" not in output
+
+
+def test_tool_result_renders_mcp_content():
+    renderer, console = make_renderer()
+
+    renderer.tool_result("call-1", MCPResult(content='{"content":[{"type":"text","text":"int main()"}]}'))
+
+    output = console.export_text()
+    assert "  ⎿ " in output
+    assert "int main()" in output
+
+
+def test_clip_chars_truncates_long_single_line():
+    renderer, _ = make_renderer()
+
+    lines = renderer._clip_chars("x" * 5000, limit=1000)
+
+    assert "".join(lines).endswith("… +4000 chars")
 
 
 def test_status_renders_message():

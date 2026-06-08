@@ -19,7 +19,7 @@ from rich.syntax import Syntax
 from rich.theme import Theme
 from rich.text import Text
 
-from reagent.results import DiffResult, ErrorResult, ReadResult, ShellResult, ToolResult
+from reagent.results import DiffResult, ErrorResult, MCPResult, ReadResult, ShellResult, ToolResult
 
 
 SPINNER_FRAMES = "☰☱☲☳☴☵☶☷"
@@ -175,6 +175,8 @@ class RichRenderer:
                     self._print_diff(diff, path)
                 else:
                     self._print_tree([msg], style="reagent.success")
+            case MCPResult(content=content):
+                self._print_tree(self._clip_chars(content), style="reagent.guide")
 
     def _print_read(self, content: str, path: str, start_line: int) -> None:
         lines = content.splitlines()
@@ -528,6 +530,11 @@ class RichRenderer:
         omitted = len(lines) - head_count - tail_count
 
         return [*lines[:head_count], f"... +{omitted} lines omitted", *lines[-tail_count:]]
+
+    def _clip_chars(self, content: str, limit: int = 1000) -> list[str]:
+        if len(content) <= limit:
+            return self._clip_lines(content)
+        return self._clip_lines(content[:limit] + f"… +{len(content) - limit} chars")
 
     def _print_header(self, text: Text) -> None:
         self.console.print(Text.assemble(("  ⎿  ", GUIDE_STYLE), text))
