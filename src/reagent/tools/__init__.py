@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from reagent.results import ToolResult
@@ -13,4 +13,12 @@ _ALL_TOOLS: list[Tool] = [ShellTool(), ReadFileTool(), WriteFileTool(), EditFile
 TOOLS: list[dict[str, Any]] = [t.to_schema() for t in _ALL_TOOLS]
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], ToolResult]] = {t.name: t.run for t in _ALL_TOOLS}
 
-__all__ = ["Tool", "TOOLS", "TOOL_HANDLERS"]
+
+def register_tools(extra: Sequence[Tool]) -> None:
+    _ALL_TOOLS.extend(extra)
+    TOOLS[:] = [t.to_schema() for t in _ALL_TOOLS]
+    TOOL_HANDLERS.clear()
+    TOOL_HANDLERS.update({t.name: t.run for t in _ALL_TOOLS})
+
+
+__all__ = ["TOOLS", "TOOL_HANDLERS", "Tool", "register_tools"]

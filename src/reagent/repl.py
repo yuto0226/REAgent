@@ -26,6 +26,8 @@ from rich.style import Style as RichStyle
 
 from reagent.compact import make_compact_fn
 from reagent.config import Config
+from reagent.mcp import MCPManager, build_mcp_tools
+from reagent.mcp.types import ServerSpec
 from reagent.rendering import (
     ASSISTANT_BULLET_STYLE,
     GUIDE_STYLE,
@@ -39,6 +41,7 @@ from reagent.results import ErrorResult, ToolResult
 from reagent.session import Session
 from reagent.session.turn import run_turn
 from reagent.slash_commands import SlashCommand, SlashRender, SlashResult, completions, dispatch
+from reagent.tools import register_tools
 
 # Map Shift+Enter escape sequences to F20 as a proxy key.
 # Terminals supporting kitty keyboard protocol send \x1b[13;2u;
@@ -265,6 +268,14 @@ def _make_app(*, layout: Layout | None, key_bindings: KeyBindingsBase | None) ->
         erase_when_done=True,
         refresh_interval=_SPIN_INTERVAL,
     )
+
+
+def _mcp_specs(config: Config) -> list[ServerSpec]:
+    specs: list[ServerSpec] = []
+    for name, server in config.mcp.servers.items():
+        if server.enabled and server.transport == "http" and server.url:
+            specs.append(ServerSpec(name=name, url=server.url, headers=server.headers))
+    return specs
 
 
 async def run(session: Session, config: Config) -> None:
@@ -613,29 +624,31 @@ async def run(session: Session, config: Config) -> None:
             if interrupted:
                 _set_status("■ Conversation interrupted")
 
-    process_task = asyncio.create_task(_process_turns())
-    outbox_task = asyncio.create_task(outbox.run())
-    try:
-        await output_app.run_async()
-    finally:
-        process_task.cancel()
-        await asyncio.gather(process_task, return_exceptions=True)
-        if hint_clear_task is not None:
-            hint_clear_task.cancel()
-            await asyncio.gather(hint_clear_task, return_exceptions=True)
-        await outbox.drain()
-        outbox.stop()
-        await asyncio.gather(outbox_task, return_exceptions=True)
-        _print_usage(
-            terminal_console,
-            _fmt_usage(
-                total=session.total_tokens,
-                input_tokens=session.prompt_tokens,
-                output_tokens=session.completion_tokens,
-                cached_tokens=session.cached_tokens,
-                reasoning_tokens=session.reasoning_tokens,
-            ),
-        )
+    async with MCPManager(_mcp_specs(config), emit=session.emit_status) as mcp:
+        register_tools(build_mcp_tools(mcp, loop))
+        process_task = asyncio.create_task(_process_turns())
+        outbox_task = asyncio.create_task(outbox.run())
+        try:
+            await output_app.run_async()
+        finally:
+            process_task.cancel()
+            await asyncio.gather(process_task, return_exceptions=True)
+            if hint_clear_task is not None:
+                hint_clear_task.cancel()
+                await asyncio.gather(hint_clear_task, return_exceptions=True)
+            await outbox.drain()
+            outbox.stop()
+            await asyncio.gather(outbox_task, return_exceptions=True)
+            _print_usage(
+                terminal_console,
+                _fmt_usage(
+                    total=session.total_tokens,
+                    input_tokens=session.prompt_tokens,
+                    output_tokens=session.completion_tokens,
+                    cached_tokens=session.cached_tokens,
+                    reasoning_tokens=session.reasoning_tokens,
+                ),
+            )
 
 
 def start(session: Session, config: Config) -> None:
