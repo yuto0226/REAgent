@@ -122,3 +122,9 @@ async def test_call_client_exception_maps_to_error():
     out = await _manager_with(session).call("ida__decompile", {})
     assert isinstance(out, ErrorResult)
     assert "disconnected" in out.text
+
+
+async def test_connect_failure_is_fail_soft():
+    spec = ServerSpec(name="dead", url="http://127.0.0.1:1/mcp", connect_timeout=2.0)
+    async with MCPManager([spec]) as mcp:
+        assert mcp.tool_names == []

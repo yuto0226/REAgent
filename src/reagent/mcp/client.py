@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
 from datetime import timedelta
 from types import TracebackType
@@ -34,12 +34,8 @@ class MCPManager:
 
     async def __aenter__(self) -> MCPManager:
         await self._stack.__aenter__()
-        try:
-            for spec in self._specs:
-                await self._connect(spec)
-        except BaseException:
-            await self._stack.aclose()
-            raise
+        for spec in self._specs:
+            await self._connect(spec)
         return self
 
     async def __aexit__(
@@ -51,11 +47,17 @@ class MCPManager:
         return await self._stack.__aexit__(exc_type, exc, tb)
 
     async def _connect(self, spec: ServerSpec) -> None:
+        stack = AsyncExitStack()
         try:
-            session, tools = await self._open(spec)
-        except Exception as exc:
-            self._emit(f"[mcp] {spec.name}: connection failed, skipping ({exc})")
+            session, tools = await self._open(spec, stack)
+        except BaseException as exc:
+            with suppress(BaseException):
+                await stack.aclose()
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self._emit(f"[mcp] {spec.name}: connection failed, skipping ({type(exc).__name__})")
             return
+        self._stack.push_async_callback(stack.aclose)
 
         count = 0
         for tool in tools:
@@ -71,15 +73,15 @@ class MCPManager:
             count += 1
         self._emit(f"[mcp] {spec.name}: {count} tool(s) ready")
 
-    async def _open(self, spec: ServerSpec) -> tuple[ClientSession, list[Tool]]:
-        read, write, _ = await self._stack.enter_async_context(
+    async def _open(self, spec: ServerSpec, stack: AsyncExitStack) -> tuple[ClientSession, list[Tool]]:
+        read, write, _ = await stack.enter_async_context(
             streamablehttp_client(
                 spec.url,
                 headers=dict(spec.headers),
                 timeout=timedelta(seconds=spec.connect_timeout),
             )
         )
-        session = await self._stack.enter_async_context(ClientSession(read, write))
+        session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         return session, (await session.list_tools()).tools
 
