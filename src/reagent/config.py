@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
+import re
 import tomllib
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
@@ -26,6 +28,8 @@ _PROVIDER_KEY_ENV = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
+_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+_TABLE_HEADER = re.compile(r"^\s*\[(?P<name>[^\]]+)\]\s*(?:#.*)?$")
 
 
 class ConfigError(ValueError):
@@ -116,6 +120,40 @@ def apply_provider_env(config: Config, env: MutableMapping[str, str] | None = No
             target.setdefault(env_name, provider.key)
 
 
+def user_config_path(env: Mapping[str, str] | None = None) -> Path:
+    """Return the user-level config path used by provider management commands."""
+    effective_env = os.environ if env is None else env
+    return Path(effective_env.get("REAGENT_HOME", "~/.reagent")).expanduser() / "config.toml"
+
+
+def set_provider_key(provider: str, key: str, env: Mapping[str, str] | None = None) -> Path:
+    """Write a provider key into the user config without touching project config."""
+    _validate_provider_name(provider)
+    
+    path = user_config_path(env)
+    
+    text = _read_user_config_text(path)
+    text = _set_provider_key_text(text, provider, key)
+    _write_user_config(path, text)
+    
+    return path
+
+
+def remove_provider_key(provider: str, env: Mapping[str, str] | None = None) -> Path:
+    """Remove a provider key from the user config without deleting other settings."""
+    _validate_provider_name(provider)
+    
+    path = user_config_path(env)
+    if not path.exists():
+        return path
+    
+    text = _read_user_config_text(path)
+    text = _remove_provider_key_text(text, provider)
+    _write_user_config(path, text)
+    
+    return path
+
+
 def load_layers(
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
@@ -157,6 +195,74 @@ def _file_layers(
         if path.exists():
             layers.append(Layer("extra", path, _read_config(path)))
     return layers
+
+
+def _read_user_config_text(path: Path) -> str:
+    if not path.exists():
+        return ""
+    _read_config(path)
+    return path.read_text(encoding="utf-8")
+
+
+def _write_user_config(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _set_provider_key_text(text: str, provider: str, key: str) -> str:
+    line = f"key = {_toml_string(key)}"
+    bounds = _find_table(text, f"providers.{provider}")
+    if bounds is None:
+        prefix = "" if not text else text if text.endswith("\n") else f"{text}\n"
+        return f"{prefix}[providers.{provider}]\n{line}\n"
+
+    lines = text.splitlines(keepends=True)
+    start, end = bounds
+    for index in range(start + 1, end):
+        if re.match(r"^\s*key\s*=", lines[index]):
+            indent_match = re.match(r"^(\s*)", lines[index])
+            indent = "" if indent_match is None else indent_match.group(1)
+            lines[index] = f"{indent}{line}\n"
+            return "".join(lines)
+
+    lines.insert(start + 1, f"{line}\n")
+    return "".join(lines)
+
+
+def _remove_provider_key_text(text: str, provider: str) -> str:
+    bounds = _find_table(text, f"providers.{provider}")
+    if bounds is None:
+        return text
+
+    lines = text.splitlines(keepends=True)
+    start, end = bounds
+    kept = [line for index, line in enumerate(lines) if not (start < index < end and re.match(r"^\s*key\s*=", line))]
+    return "".join(kept)
+
+
+def _find_table(text: str, table_name: str) -> tuple[int, int] | None:
+    lines = text.splitlines(keepends=True)
+    start = None
+    for index, line in enumerate(lines):
+        match = _TABLE_HEADER.match(line)
+        if match is None:
+            continue
+        if start is not None:
+            return start, index
+        if match.group("name") == table_name:
+            start = index
+    if start is None:
+        return None
+    return start, len(lines)
+
+
+def _validate_provider_name(provider: str) -> None:
+    if not _PROVIDER_NAME.fullmatch(provider):
+        raise ConfigError("provider name must contain only letters, numbers, underscores, or hyphens")
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(value)
 
 
 def _project_config_path(cwd: Path) -> Path:
