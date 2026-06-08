@@ -625,7 +625,7 @@ async def run(session: Session, config: Config) -> None:
                 _set_status("■ Conversation interrupted")
 
     async with MCPManager(_mcp_specs(config), emit=session.emit_status) as mcp:
-        register_tools(build_mcp_tools(mcp, loop))
+        register_tools(build_mcp_tools(mcp))
         process_task = asyncio.create_task(_process_turns())
         outbox_task = asyncio.create_task(outbox.run())
         try:
